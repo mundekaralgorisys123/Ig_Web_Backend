@@ -1,0 +1,10 @@
+flask 
+requests 
+openpyxl==3.1.5 
+beautifulsoup4==4.12.3 
+pillow==10.3.0 
+playwright 
+pymssql==2.3.2 
+python-dotenv
+Flask-CORS
+

@@ -1,0 +1,238 @@
+import os
+import time
+import logging
+import requests
+import concurrent.futures
+from datetime import datetime
+from io import BytesIO
+from playwright.sync_api import sync_playwright, TimeoutError as PlaywrightTimeoutError, Error as PlaywrightError
+from openpyxl import Workbook
+from openpyxl.drawing.image import Image
+from flask import Flask
+import uuid
+import base64
+from dotenv import load_dotenv
+from utils import get_public_ip, log_event, sanitize_filename
+from database import insert_into_db, create_table
+from limit_checker import update_product_count
+import random
+import re
+
+# Load environment variables
+load_dotenv()
+PROXY_URL = os.getenv("PROXY_URL")
+
+# Setup Flask
+app = Flask(__name__)
+BASE_DIR = os.path.dirname(os.path.abspath(__file__))
+EXCEL_DATA_PATH = os.path.join(BASE_DIR, 'static', 'ExcelData')
+IMAGE_SAVE_PATH = os.path.join(BASE_DIR, 'static', 'Images')
+
+# Ensure directories exist
+os.makedirs(EXCEL_DATA_PATH, exist_ok=True)
+os.makedirs(IMAGE_SAVE_PATH, exist_ok=True)
+
+# Configure logging
+logging.basicConfig(level=logging.INFO, format="%(asctime)s - %(levelname)s - %(message)s")
+
+
+def sanitize_filename1(filename):
+    return re.sub(r'[^\w\-_.]', '_', filename)
+
+
+def modify_image_url1(image_url):
+    """Enhance Macy's image URL to get higher resolution version"""
+    if not image_url or image_url == "N/A":
+        return image_url
+    
+    # Replace dimensions in query parameters
+    modified_url = re.sub(r'wid=\d+', 'wid=1200', image_url)
+    modified_url = re.sub(r'hei=\d+', 'hei=1200', modified_url)
+    
+    # Replace image quality parameters
+    modified_url = re.sub(r'qlt=[^&]+', 'qlt=95', modified_url)
+    
+    return modified_url
+
+
+def modify_image_url(image_url):
+    """Modify the image URL to replace '_260' with '_1200' while keeping query parameters."""
+    if not image_url or image_url == "N/A":
+        return image_url
+
+    # Extract and preserve query parameters
+    query_params = ""
+    if "?" in image_url:
+        image_url, query_params = image_url.split("?", 1)
+        query_params = f"?{query_params}"
+
+    # Replace '_260' with '_1200' while keeping the rest of the URL intact
+    modified_url = re.sub(r'(_260)(?=\.\w+$)', '_1200', image_url)
+
+    return modified_url + query_params  # Append query parameters if they exist
+
+HEADERS = {
+    "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+    "Referer": "https://www.fredmeyerjewelers.com/",
+}
+
+def download_image(image_url, product_name, timestamp, image_folder, retries=3, timeout=30):
+    if not image_url or image_url == "N/A":
+        return "N/A"
+
+    safe_product_name = sanitize_filename1(product_name)
+    image_filename = f"{safe_product_name}_{timestamp}.jpg"
+    image_full_path = os.path.join(image_folder, image_filename)
+
+    for attempt in range(1, retries + 1):
+        try:
+            headers = {"User-Agent": "Mozilla/5.0"}
+            response = requests.get(image_url, headers=headers, stream=True, timeout=timeout)
+            response.raise_for_status()
+            with open(image_full_path, "wb") as f:
+                f.write(response.content)
+            return image_full_path
+
+            # with open(image_filename, "wb") as file:
+            #     for chunk in response.iter_content(1024):
+            #         file.write(chunk)
+
+            # print(f"✅ Image saved: {image_filename}")
+            # return image_filename
+        except requests.exceptions.RequestException as e:
+            print(f"❌ Attempt {attempt}: Error downloading {image_url} - {e}")
+            time.sleep(5)  # Wait before retrying
+    
+    print(f"❌ Failed to download image after {retries} attempts.")
+    return None
+
+
+   
+    
+
+def handle_fredmeyer(url, max_pages):
+    """Scrape product data from Macy's website."""
+    ip_address = get_public_ip()
+    logging.info(f"Scraping started for: {url} from IP: {ip_address}, max_pages: {max_pages}")
+
+    # Ensure directories exist
+    os.makedirs(EXCEL_DATA_PATH, exist_ok=True)
+    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+    image_folder = os.path.join(IMAGE_SAVE_PATH, timestamp)
+    os.makedirs(image_folder, exist_ok=True)
+
+    # Initialize Excel
+    wb = Workbook()
+    sheet = wb.active
+    sheet.title = "Products"
+    headers = ["Current Date", "Header", "Product Name", "Image", "Gold Type", "Price", "Total Dia Wt", "Time", "ImagePath"]
+    sheet.append(headers)
+    current_date = datetime.now().strftime("%Y-%m-%d")
+    time_only = datetime.now().strftime("%H-%M-%S")
+    records = []
+    image_tasks = []
+
+    # Initialize page count
+    page_count = 0
+
+    with sync_playwright() as p:
+        ip_address = get_public_ip()
+        logging.info(f"Scraping started for: {url} from IP: {ip_address}, max_pages: {max_pages}")
+
+        browser = p.chromium.launch(headless=False)
+        # browser = p.chromium.connect_over_cdp(PROXY_URL)
+        page = browser.new_page()
+        current_url = url
+    
+        while current_url and (page_count < max_pages):
+            logging.info(f"Processing page: {current_url}")
+            page.goto(url, timeout=180000, wait_until="domcontentloaded")
+            
+            prev_product_count = 0
+            for _ in range(50):  # Scroll multiple times to ensure all products are loaded
+                page.evaluate("window.scrollTo(0, document.body.scrollHeight)")
+                page.wait_for_selector(".grid-group-item", timeout=5000)  # Using the correct class selector
+                current_product_count = page.locator(".grid-group-item").count()
+
+                if current_product_count == prev_product_count:  # Stop if no new products are loaded
+                    break
+                prev_product_count = current_product_count
+            
+            # Scroll down to load all products
+            
+            # page.evaluate("window.scrollTo(0, document.body.scrollHeight)")
+            # page.wait_for_timeout(2000)
+           
+
+            product_wrapper = page.query_selector("div.row.fmjLoadMoreResultsContainer")
+            products = page.query_selector_all("div.grid-group-item") if product_wrapper else []
+            page_title = page.title()
+            logging.info(f"Total products found: {len(products)}")
+
+            # Debugging: Print the number of products found
+            print(f"Total products found: {len(products)}")
+                        
+            with concurrent.futures.ThreadPoolExecutor(max_workers=5) as executor:
+                for row_num, product in enumerate(products, start=2):
+                    product_name_tag = product.query_selector('div.prodtext a')
+                    product_name = product_name_tag.inner_text().strip() if product_name_tag else "N/A"
+
+                    # Extract Price
+                    price_tag = product.query_selector('span.curprice')
+                    price = price_tag.inner_text().strip() if price_tag else "N/A"
+
+                    # Extract Main Product Image
+                    base_url = "https://www.fredmeyerjewelers.com"
+                    image_tag = product.query_selector('img.mainprodimage')
+                    relative_url = image_tag.get_attribute('src') if image_tag else "N/A"
+                    image_url = base_url + relative_url if relative_url and relative_url.startswith("/") else relative_url
+
+                    gold_type_pattern = r"\b\d+K\s+\w+\s+\w+\b"
+                    gold_type_match = re.search(gold_type_pattern, product_name)
+                    kt = gold_type_match.group() if gold_type_match else "Not found"
+
+                    diamond_weight_pattern = r"\d+[-/]?\d*/?\d*\s*ct\s*tw"
+                    diamond_weight_match = re.search(diamond_weight_pattern, product_name)
+                    diamond_weight = diamond_weight_match.group() if diamond_weight_match else "N/A"
+
+                    unique_id = str(uuid.uuid4())
+                    image_future = executor.submit(download_image, image_url, product_name, timestamp, image_folder)
+                    image_tasks.append((row_num, image_future))
+
+                    records.append((unique_id, current_date, page_title, product_name, image_url, kt, price, diamond_weight))
+                    sheet.append([current_date, page_title, product_name, None, kt, price, diamond_weight, time_only, image_url])
+
+            for row_num, future in image_tasks:
+                image_path = future.result()
+                if image_path != "N/A":
+                    img = Image(image_path)
+                    img.width, img.height = 100, 100
+                    sheet.add_image(img, f"D{row_num}")
+                    
+            
+                    
+            next_button = page.locator("li.FMJ_page-item.next-page a")
+            next_link = next_button.get_attribute("href") if next_button.count() > 0 else None
+            current_url = next_link if next_link else None
+            page_count += 1
+            print(f"Next Page URL: {current_url}")
+    
+
+        browser.close()
+        logging.info("Browser closed.")
+                            
+
+            
+
+        filename = f"handle_fredmeyer_{current_date}_{time_only}.xlsx"
+        file_path = os.path.join(EXCEL_DATA_PATH, filename)
+        wb.save(file_path)
+        log_event(f"Data saved to {file_path}")
+
+        with open(file_path, "rb") as file:
+            base64_encoded = base64.b64encode(file.read()).decode("utf-8")
+
+        insert_into_db(records)
+        update_product_count(len(products))
+
+        return base64_encoded, filename, file_path

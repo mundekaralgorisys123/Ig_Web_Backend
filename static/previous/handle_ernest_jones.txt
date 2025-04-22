@@ -1,0 +1,250 @@
+import time
+import re
+import os
+import logging
+import requests
+from datetime import datetime
+from io import BytesIO
+from playwright.sync_api import sync_playwright, TimeoutError
+from openpyxl import Workbook
+from openpyxl.drawing.image import Image
+from bs4 import BeautifulSoup
+from flask import Flask
+import uuid
+import base64
+from dotenv import load_dotenv
+from utils import get_public_ip, log_event, sanitize_filename
+from database import insert_into_db, create_table
+from playwright.sync_api import Page, TimeoutError, Error
+# Load environment variables from .env file
+from limit_checker import update_product_count
+load_dotenv()
+# Get proxy URL from .env, if available
+PROXY_URL = os.getenv("PROXY_URL")
+
+
+
+# Setup Flask and paths
+app = Flask(__name__)
+BASE_DIR = os.path.dirname(os.path.abspath(__file__))
+EXCEL_DATA_PATH = os.path.join(app.root_path, 'static', 'ExcelData')
+IMAGE_SAVE_PATH = os.path.join(BASE_DIR, 'static', 'Images')
+
+
+    
+def scroll_and_load_products(page: Page, max_pages: int, final_url: str):
+    """Scroll and click 'Load More' until all products are loaded or max pages reached."""
+    
+    # Extract max_pages limit from URL
+    url_max_pages = int(final_url.split("loadMore=")[-1]) if "loadMore=" in final_url else float("inf")
+    max_pages = min(max_pages, url_max_pages)  # Ensure max_pages does not exceed URL limit
+
+    previous_count = 0
+    current_page = 1 # Track loaded pages
+
+    while current_page <= max_pages:
+        try:
+            # Stop if the page is closed or crashed
+            if page.is_closed():
+                print("🚨 Page is closed unexpectedly. Exiting...")
+                break
+
+            # Scroll down slightly to trigger lazy loading
+            # Improved scrolling logic
+            previous_height = None
+            scroll_attempt = 0
+            max_scroll_attempts = 2  # Limit to avoid infinite loops
+            
+            while scroll_attempt < max_scroll_attempts:
+                current_height = page.evaluate("(window.scrollY + window.innerHeight)")
+                if previous_height == current_height:
+                    scroll_attempt += 1
+                    print(f"No more content to load. Attempt: {scroll_attempt}")
+                    time.sleep(2)  # Give some time before the next attempt
+                else:
+                    scroll_attempt = 0  # Reset if new content loads
+                    previous_height = current_height
+                    page.evaluate("window.scrollBy(0, window.innerHeight)")
+                    time.sleep(2)
+            
+
+            # Count total loaded products
+            current_count = len(page.query_selector_all("div.product-item"))
+            print(f"✅ Loaded {current_count} products... (Page {current_page}/{max_pages})")
+
+            # If no new products are loading, check for 'Load More' button
+            if current_count == previous_count:
+                if current_page >= max_pages:
+                    print(f"📌 Reached max pages ({max_pages}). Stopping.")
+                    break  # Stop further loading
+
+                try:
+                    load_more_button = page.wait_for_selector(".load-more-button-uk", timeout=3000)
+                    
+                    if load_more_button and load_more_button.is_visible():
+                        print(f"🔄 Clicking 'Load More' (Page {current_page}/{max_pages})...")
+                        load_more_button.click()
+                        time.sleep(5)  # Allow products to load
+                        current_page += 1
+                    else:
+                        print("❌ No 'Load More' button available. Stopping.")
+                        break
+                except TimeoutError:
+                    print("⏳ No 'Load More' button detected. All products loaded.")
+                    break
+
+            previous_count = current_count
+
+        except Error as e:
+            print(f"🚨 Playwright error occurred: {e}")
+            break  # Exit loop on fatal error
+
+    print(f"🎉 Completed loading products up to page {current_page}/{max_pages}.")    
+
+
+
+def handle_ernest_jones(url,max_pages,final_url):
+    ip_address = get_public_ip()
+    logging.info(f"Scraping started for: {url} from IP: {ip_address} max_pages: {max_pages}")
+    print("====================== IN =======================================================")
+        
+
+    with sync_playwright() as p:
+        
+        browser = p.chromium.connect_over_cdp(PROXY_URL)
+        # browser = p.chromium.launch(headless=True, args=['--disable-dev-shm-usage'])
+        # browser = p.chromium.launch(
+        #         headless=True, 
+        #         args=[
+        #             '--disable-dev-shm-usage',
+        #             f'--proxy-server={PROXY_URL}'  # Pass the proxy here
+        #         ]
+        #     )
+        page = browser.new_page()
+
+        print("Opening page...")
+        # page.goto(url, timeout=120000)
+        page.goto(url, timeout=180000, wait_until="domcontentloaded")
+
+        try:
+            accept_button = page.wait_for_selector(".cookie-consent-dialog__cta.js-close-dialog", timeout=5000)
+            if accept_button.is_visible():
+                accept_button.click()
+        except TimeoutError:
+            print("No cookie consent banner detected.")
+
+        scroll_and_load_products(page,max_pages,final_url)
+
+        print("Extracting product data...")
+        # page_content = page.evaluate("document.documentElement.outerHTML")
+        # content = BeautifulSoup(page_content, 'html.parser')
+        # title_tag = content.find('title')
+        # page_title = title_tag.get_text() if title_tag else "No title found"
+        page_title = page.title()
+        print(f"Page title: {page_title}")
+        
+
+        # product_wrapper = content.find('div', class_='product-scroll-wrapper')
+        # products = product_wrapper.find_all('div', class_='product-item') if product_wrapper else []
+        product_wrapper = page.query_selector(".product-scroll-wrapper")
+        products = product_wrapper.query_selector_all(".product-item") if product_wrapper else []
+
+        print(f"Products scraped: {len(products)}")
+
+        browser.close()
+    
+    return save_to_excel(products, page_title)
+
+def save_to_excel(products, page_title):
+    if not os.path.exists(EXCEL_DATA_PATH):
+        os.makedirs(EXCEL_DATA_PATH)
+
+    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+    image_folder = os.path.join(IMAGE_SAVE_PATH, timestamp)
+    os.makedirs(image_folder, exist_ok=True)
+
+    wb = Workbook()
+    sheet = wb.active
+    sheet.title = "Products"
+
+    headers = ["Current Date", "Header", "Product Name", "Image", "Kt", "Price", "Total Dia wt", "Time", "ImagePath"]
+    sheet.append(headers)
+
+    current_date = datetime.now().strftime("%Y-%m-%d")
+    time_only = datetime.now().strftime("%H.%M")
+    # create_table()
+
+    row_num = 2
+    for product in products:
+        # product_name_tag = product.find('h2', class_='name product-tile-description')
+        # product_name = product_name_tag.get_text(strip=True) if product_name_tag else "N/A"
+
+
+        # price_tag = product.find('div', class_='price')
+        # price = price_tag.text.strip() if price_tag else "N/A"
+
+        # images = product.find_all('img')
+        # product_url = [img['src'] for img in images if img.get('src', '').startswith('https://')]
+        # image_url = product_url[0] if product_url else "N/A"
+        
+        name_element = product.query_selector("h2.name.product-tile-description")
+        product_name = name_element.inner_text().strip() if name_element else "N/A"
+
+        # Extract price
+        price_element = product.query_selector("div.price")
+        price = price_element.inner_text().strip() if price_element else "N/A"
+
+        # Extract image URL
+        image_elements = product.query_selector_all("img")
+        image_urls = [img.get_attribute("src") for img in image_elements if img.get_attribute("src") and img.get_attribute("src").startswith("https://")]
+        image_url = image_urls[0] if image_urls else "N/A"
+
+        gold_type_pattern = r"\b\d+K\s+\w+\s+\w+\b"
+        gold_type_match = re.search(gold_type_pattern, product_name)
+        kt = gold_type_match.group() if gold_type_match else "Not found"
+
+        diamond_weight_pattern = r"\d+[-/]?\d*/?\d*\s*ct\s*tw"
+        diamond_weight_match = re.search(diamond_weight_pattern, product_name)
+        diamond_weight = diamond_weight_match.group() if diamond_weight_match else "N/A"
+
+        unique_id = str(uuid.uuid4())
+        image_path = "N/A"
+
+        if image_url != "N/A":
+            try:
+                img_data = requests.get(image_url).content
+                image_filename = f"{sanitize_filename(product_name)}_{timestamp}.jpg"
+                image_full_path = os.path.join(image_folder, image_filename)
+
+                with open(image_full_path, "wb") as f:
+                    f.write(img_data)
+
+                image_path = os.path.join("Images", timestamp, image_filename)
+                img = Image(image_full_path)
+                img.width, img.height = 100, 100
+                sheet.add_image(img, f"D{row_num}")
+
+            except Exception as e:
+                log_event(f"Error downloading image for {product_name}: {e}")
+
+        sheet.append([current_date, page_title, product_name, None, kt, price, diamond_weight, time_only, image_url])
+        sheet.row_dimensions[row_num].height = 100
+        row_num += 1
+
+        record = (unique_id, current_date, page_title, product_name, image_path, kt, price, diamond_weight)
+        insert_into_db([record])
+
+    filename = f"Ernest_Jones_{current_date}_{time_only}.xlsx"
+    file_path = os.path.join(EXCEL_DATA_PATH, filename)
+    wb.save(file_path)
+    log_event(f"Data saved to {file_path}")
+
+    with open(file_path, "rb") as file:
+        base64_encoded = base64.b64encode(file.read()).decode("utf-8")
+    print("====================== OUT =======================================================")
+    
+    products_fetched = len(products)
+    # Update the product count.
+    update_product_count(products_fetched)
+        
+    return base64_encoded, filename, file_path

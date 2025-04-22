@@ -1,0 +1,192 @@
+import time
+import re
+import os
+import uuid
+import requests
+import base64
+import logging
+from datetime import datetime
+from playwright.sync_api import sync_playwright, TimeoutError
+from openpyxl import Workbook
+from openpyxl.drawing.image import Image as ExcelImage
+from bs4 import BeautifulSoup
+from flask import Flask, jsonify
+from dotenv import load_dotenv
+from utils import get_public_ip, log_event, sanitize_filename
+from database import insert_into_db, create_table
+from limit_checker import update_product_count
+# Load environment variables from .env file
+load_dotenv()
+PROXY_URL = os.getenv("PROXY_URL")
+
+
+
+# Setup Flask and directory paths
+app = Flask(__name__)
+BASE_DIR = os.path.dirname(os.path.abspath(__file__))
+EXCEL_DATA_PATH = os.path.join(app.root_path, 'static', 'ExcelData')
+IMAGE_SAVE_PATH = os.path.join(BASE_DIR, 'static', 'Images')
+
+
+def handle_gabriel(start_url, max_pages):
+    ip_address = get_public_ip()
+    logging.info(f"Scraping started for: {start_url} from IP: {ip_address} max_pages: {max_pages}")
+    print("====================== IN =======================================================")
+        
+
+    # Initialize Excel workbook
+    if not os.path.exists(EXCEL_DATA_PATH):
+        os.makedirs(EXCEL_DATA_PATH)
+    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+    image_folder = os.path.join(IMAGE_SAVE_PATH, timestamp)
+    os.makedirs(image_folder, exist_ok=True)
+    wb = Workbook()
+    sheet = wb.active
+    sheet.title = "Products"
+    headers = ["Current Date", "Header", "Product Name", "Image", "Gold Type", "Price", "Total Dia wt", "Time", "ImagePath"]
+    sheet.append(headers)
+    current_date = datetime.now().strftime("%Y-%m-%d")
+    time_only = datetime.now().strftime("%H-%M-%S")  # Fixed for Windows compatibility
+    # create_table()  # Ensure the database table exists
+
+    row_num = 2  # Global row counter for Excel sheet
+    page_count = 0  # Track number of pages processed
+
+    with sync_playwright() as p:
+        browser = p.chromium.connect_over_cdp(PROXY_URL)
+        # browser = p.chromium.launch(headless=True)
+        # browser = p.chromium.launch(
+        #     headless=True, 
+        #     args=[
+        #         '--disable-dev-shm-usage',
+        #         f'--proxy-server={PROXY_URL}'  # Pass the proxy here
+        #     ]
+        # )
+        page = browser.new_page()
+        current_url = start_url
+
+        while current_url and (page_count < max_pages):
+            logging.info(f"Processing page: {current_url}")
+            # page.goto(current_url, timeout=120000)
+            page.goto(current_url, timeout=180000, wait_until="domcontentloaded")
+            log_event(f"Successfully loaded: {current_url}")
+
+            # Handle 'Load More' button clicks
+            while True:
+                time.sleep(5)
+                try:
+                    load_more_button = page.locator("div.col-xs-12.show-more.text-center.updated a.fnchangepage.show-more-button").first
+                    if load_more_button.is_visible():
+                        load_more_button.click()
+                        log_event("Clicked 'Load More' button")
+                        page.wait_for_selector('.ProductCardWrapper', timeout=5000)
+                    else:
+                        break
+                except TimeoutError:
+                    break
+
+            # Scroll to load lazy-loaded products
+            prev_product_count = 0
+            for _ in range(50):
+                page.evaluate("window.scrollTo(0, document.body.scrollHeight)")
+                page.wait_for_selector('.ProductCardWrapper', timeout=5000)
+                current_product_count = page.locator('.ProductCardWrapper').count()
+                if current_product_count == prev_product_count:
+                    break
+                prev_product_count = current_product_count
+
+            # Extract full page HTML and parse with BeautifulSoup
+            page_content = page.evaluate("document.documentElement.outerHTML")
+            soup = BeautifulSoup(page_content, 'html.parser')
+            title_tag = soup.find('title')
+            page_title = title_tag.get_text(strip=True) if title_tag else "No Title"
+
+            # Extract products
+            product_container = soup.find('div', class_='products wrapper tw-container qd-product-list new-mm-qd-product-list')
+            products = product_container.find_all('div', class_='ProductCardWrapper') if product_container else []
+            logging.info(f"Found {len(products)} products on current page")
+
+            for product in products:
+                product_name_tag = product.find('h2', class_='ProductName')
+                product_name = product_name_tag.get_text(strip=True) if product_name_tag else "N/A"
+
+                price_tag = product.find('span', class_='price-wrapper')
+                price = price_tag.find('span', class_='price').text.strip() if price_tag else "N/A"
+
+                images = product.find_all('img', class_='image-entity')
+                product_urls = [img['data-src'] for img in images if img.get('data-src', '').startswith('https://')]
+                image_url = product_urls[0] if product_urls else "N/A"
+
+                gold_type_match = re.search(r"(\d{1,2}K|Platinum|Silver|Gold|White Gold|Yellow Gold|Rose Gold)", product_name, re.IGNORECASE)
+                kt = gold_type_match.group(0) if gold_type_match else "N/A"
+
+                diamond_weight_match = re.search(r"(\d+(\.\d+)?)\s*(ct|carat)", product_name, re.IGNORECASE)
+                diamond_weight = f"{diamond_weight_match.group(1)} ct" if diamond_weight_match else "N/A"
+
+                unique_id = str(uuid.uuid4())
+                image_path = "N/A"
+                image_full_path = None
+
+                if image_url != "N/A":
+                    try:
+                        img_data = requests.get(image_url).content
+                        image_filename = f"{sanitize_filename(product_name)}_{timestamp}.jpg"
+                        image_full_path = os.path.join(image_folder, image_filename)
+                        with open(image_full_path, "wb") as f:
+                            f.write(img_data)
+                        image_path = os.path.join("Images", timestamp, image_filename)
+                    except Exception as e:
+                        log_event(f"Error downloading image: {e}")
+
+                # Write to Excel
+                sheet.append([current_date, page_title, product_name, "", kt, price, diamond_weight, time_only, image_url])
+
+                if image_full_path and os.path.exists(image_full_path):
+                    try:
+                        img = ExcelImage(image_full_path)
+                        img.width, img.height = 100, 100
+                        sheet.add_image(img, f"D{row_num}")
+                    except Exception as e:
+                        log_event(f"Error adding image to Excel: {e}")
+
+                sheet.row_dimensions[row_num].height = 100
+
+                record = (unique_id, current_date, page_title, product_name, image_path, kt, price, diamond_weight)
+                insert_into_db([record])
+                row_num += 1
+
+            page_count += 1  # Increment page counter
+
+            # Check for pagination
+            # pagination = soup.find('div', class_='list-pager tw-flex tw-justify-center')
+            # next_link = pagination.find('a', class_='action next')['href'] if pagination else None
+            # current_url = next_link if next_link else None
+            pagination = soup.find('div', class_='list-pager tw-flex tw-justify-center')
+            next_link = None
+
+            if pagination:
+                next_button = pagination.find('a', class_='action next')
+                if next_button and 'href' in next_button.attrs:
+                    next_link = next_button['href']
+
+            current_url = next_link if next_link else None
+
+
+        browser.close()
+        logging.info("Browser closed.")
+
+        # Save Excel File
+        filename = f"gabriel_{current_date}_{time_only}.xlsx"
+        file_path = os.path.join(EXCEL_DATA_PATH, filename)
+        wb.save(file_path)
+        log_event(f"Data saved to {file_path}")
+
+        with open(file_path, "rb") as file:
+            base64_encoded = base64.b64encode(file.read()).decode("utf-8")
+            
+        print("====================== OUT =======================================================")
+        products_fetched = len(products)
+        # Update the product count.
+        update_product_count(products_fetched)
+        
+        return base64_encoded, filename, file_path

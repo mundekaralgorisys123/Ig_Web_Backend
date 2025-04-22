@@ -1,0 +1,271 @@
+import time
+import re
+import os
+import uuid
+import requests
+import base64
+import logging
+from datetime import datetime
+from playwright.sync_api import sync_playwright, TimeoutError
+from openpyxl import Workbook
+from openpyxl.drawing.image import Image as ExcelImage
+from bs4 import BeautifulSoup
+from flask import Flask, jsonify
+from dotenv import load_dotenv
+from utils import get_public_ip, log_event, sanitize_filename
+from database import insert_into_db, create_table
+from playwright.sync_api import Page, TimeoutError, Error
+from dotenv import load_dotenv
+import random
+import logging
+from limit_checker import update_product_count
+# Load environment variables from .env file
+load_dotenv()
+# Get proxy URL from .env, if available
+PROXY_URL = os.getenv("PROXY_URL")
+
+
+
+# Setup Flask and directory paths
+app = Flask(__name__)
+BASE_DIR = os.path.dirname(os.path.abspath(__file__))
+EXCEL_DATA_PATH = os.path.join(BASE_DIR, 'static', 'ExcelData')
+IMAGE_SAVE_PATH = os.path.join(BASE_DIR, 'static', 'Images')
+
+
+def random_delay(min_sec=2, max_sec=5):
+    """ Introduce random delay to mimic human-like behavior """
+    delay = random.uniform(min_sec, max_sec)
+    time.sleep(delay)
+
+def safe_action(action, retries=3, wait=2):
+    """ Safely execute browser actions with retry mechanism """
+    for i in range(retries):
+        try:
+            return action()
+        except (TimeoutError, Error) as e:
+            print(f"Attempt {i+1} failed: {e}. Retrying in {wait} seconds...")
+            time.sleep(wait)
+    print("Max retries reached. Proceeding with next steps.")
+
+def scroll_and_wait(page):
+    """ Scroll to the bottom and wait for lazy-loaded content """
+    prev_height = page.evaluate("document.body.scrollHeight")
+    page.evaluate("window.scrollTo(0, document.body.scrollHeight)")
+    time.sleep(2)  # Wait for scroll to complete
+    new_height = page.evaluate("document.body.scrollHeight")
+
+    # Continue scrolling if the height increases (new content loaded)
+    return prev_height != new_height
+
+def handle_fhinds(url, max_pages):
+    ip_address = get_public_ip()
+    logging.info(f"Scraping started for: {url} from IP: {ip_address} max_pages: {max_pages}")
+    page_title = "No title found"  # Default initialization
+    products = []
+
+    with sync_playwright() as p:
+        browser = None
+        try:
+            # Launch the browser
+            # browser = p.chromium.launch(headless=False)
+            browser = p.chromium.connect_over_cdp(PROXY_URL)
+            # browser = p.chromium.launch(headless=True, args=['--disable-dev-shm-usage'])
+            # browser = p.chromium.launch(
+            #     headless=True, 
+            #     args=[
+            #         '--disable-dev-shm-usage',
+            #         f'--proxy-server={PROXY_URL}'  # Pass the proxy here
+            #     ]
+            # )
+            page = browser.new_page()
+
+            # Open URL with retries
+            # safe_action(lambda: page.goto(url, timeout=120000))
+            page.goto(url, timeout=180000, wait_until="domcontentloaded")
+            logging.info(f"Opened URL: {url}")
+
+            # Handle cookie popup
+            try:
+                accept_button = page.locator("button.primary-button[data-consent-acceptall]").first
+                if accept_button.is_visible():
+                    logging.info("Clicking 'Accept All' button for cookies...")
+                    accept_button.click()
+                    random_delay(2, 4)  # Wait for the banner to disappear
+            except Exception as e:
+                logging.info("No cookie popup found or unable to click accept button.")
+
+            # =========================
+            # Scrape First Page Directly
+            # =========================
+            print("Scraping first page...")
+            random_delay(2, 4)
+
+            # Scroll to load lazy-loaded products on the first page
+            scroll_attempts = 0
+            max_scroll_attempts = 10
+            while scroll_attempts < max_scroll_attempts and scroll_and_wait(page):
+                scroll_attempts += 1
+                random_delay(1, 3)
+
+            # =========================
+            # Click "Load More" Dynamically
+            # =========================
+            load_more_clicks = 0
+            while load_more_clicks < (max_pages - 1):  # First page is already loaded
+                try:
+                    load_more_button = page.locator("a.fnchangepage.show-more-button").first
+                    if load_more_button.is_visible():
+                        print(f"Clicking 'Load More' button... (Page {load_more_clicks + 2})")
+                        load_more_button.click()
+                        load_more_clicks += 1
+                        random_delay(3, 5)
+                        
+                        # Scroll again to load more products
+                        scroll_attempts = 0
+                        while scroll_attempts < max_scroll_attempts and scroll_and_wait(page):
+                            scroll_attempts += 1
+                            random_delay(1, 3)
+                    else:
+                        print("No visible 'Load More' button. Exiting load more loop.")
+                        break
+                except TimeoutError:
+                    print("Load More button not found. Exiting load more loop.")
+                    break
+
+            # =========================
+            # Extract and Parse HTML
+            # =========================
+            soup = BeautifulSoup(page.content(), 'html.parser')
+            title_tag = soup.find('title')
+            if title_tag:
+                page_title = title_tag.get_text(strip=True)
+            logging.info(f"Page title: {page_title}")
+
+            # Select product containers
+            products = soup.select('.product-display-box')
+            logging.info(f"Products scraped: {len(products)}")
+
+        except Exception as e:
+            logging.error(f"Error while scraping: {e}")
+            products = []
+
+        finally:
+            # Graceful browser closure
+            if browser:
+                browser.close()
+                print("Browser closed gracefully.")
+
+    # Save products to Excel or process them immediately
+    return save_to_excel_immediate(products, page_title)
+
+
+def save_to_excel_immediate(products, page_title):
+    """
+    For each product element, extract details, write data to an Excel worksheet,
+    and insert the record into the database immediately.
+    If an image is not available, print a message to the console.
+    """
+    # Ensure the Excel data folder exists.
+    if not os.path.exists(EXCEL_DATA_PATH):
+        os.makedirs(EXCEL_DATA_PATH)
+
+    # Create a timestamp and an image folder.
+    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+    image_folder = os.path.join(IMAGE_SAVE_PATH, timestamp)
+    os.makedirs(image_folder, exist_ok=True)
+
+    # Create an Excel workbook and sheet.
+    wb = Workbook()
+    sheet = wb.active
+    sheet.title = "Products"
+    headers = ["Date", "Header", "Product Name", "Image", "Gold Type", "Price", "Total Dia wt", "Time", "ImagePath"]
+    sheet.append(headers)
+
+
+    current_date = datetime.now().strftime("%Y-%m-%d")
+    time_only = datetime.now().strftime("%H:%M:%S")
+    # create_table()  # Ensure the database table exists
+
+    row_num = 2  # Starting row for data
+
+    # Process each product one-by-one.
+    for product in products:
+        # Adjust selectors as per the actual site.
+        product_name = product.select_one('.product-name').get_text(strip=True) if product.select_one('.product-name') else "N/A"
+        price = product.select_one('.product-price .price').get_text(strip=True) if product.select_one('.product-price .price') else "N/A"
+        image_tag = product.select_one('img.scaleAll.image-hover-zoom')
+        if image_tag and 'src' in image_tag.attrs:
+            image_url = f"https://www.fhinds.co.uk{image_tag['src']}"
+        else:
+            image_url = "N/A"
+            print(f"No image found for product: {product_name}")
+
+        # Extract Gold Type. (Adjust regex if necessary.)
+        gold_type_match = re.search(r"(\d{1,2}K|Platinum|Silver|Gold|White Gold|Yellow Gold|Rose Gold)", product_name, re.IGNORECASE)
+        kt = gold_type_match.group(0) if gold_type_match else "N/A"
+
+        # Extract Diamond Weight.
+        diamond_weight_match = re.search(r"(\d+(\.\d+)?)\s*(ct|carat)", product_name, re.IGNORECASE)
+        diamond_weight = f"{diamond_weight_match.group(1)} ct" if diamond_weight_match else "N/A"
+
+        unique_id = str(uuid.uuid4())
+        image_path = "N/A"  # Default if no image is downloaded.
+        image_full_path = None
+
+        # Download image if available.
+        if image_url != "N/A":
+            try:
+                img_data = requests.get(image_url).content
+                image_filename = f"{sanitize_filename(product_name)}_{timestamp}.jpg"
+                image_full_path = os.path.join(image_folder, image_filename)
+                with open(image_full_path, "wb") as f:
+                    f.write(img_data)
+                image_path = os.path.join("Images", timestamp, image_filename)
+            except Exception as e:
+                log_event(f"Error downloading image for {product_name}: {e}")
+
+        # Write product data to Excel.
+        sheet.cell(row=row_num, column=1, value=current_date)
+        sheet.cell(row=row_num, column=2, value=page_title)
+        sheet.cell(row=row_num, column=3, value=product_name)
+        # Column 4 reserved for image (added below).
+        sheet.cell(row=row_num, column=5, value=kt)
+        sheet.cell(row=row_num, column=6, value=price)
+        sheet.cell(row=row_num, column=7, value=diamond_weight)
+        sheet.cell(row=row_num, column=8, value=time_only)
+        sheet.cell(row=row_num, column=9, value=image_url)
+
+        # If image was downloaded successfully, add it to Excel.
+        if image_full_path and os.path.exists(image_full_path):
+            try:
+                img = ExcelImage(image_full_path)
+                img.width, img.height = 100, 100
+                sheet.add_image(img, f"D{row_num}")
+            except Exception as e:
+                log_event(f"Error adding image to Excel for {product_name}: {e}")
+
+        # Set row height.
+        sheet.row_dimensions[row_num].height = 100
+
+        # Immediately insert the record into the database.
+        record = (unique_id, current_date, page_title, product_name, image_path, kt, price, diamond_weight)
+        insert_into_db([record])
+
+        row_num += 1
+
+    # Save the Excel file.
+    # filename = 'Products_Playwright.xlsx'
+    filename = f"fhinds_{datetime.now().strftime('%Y-%m-%d_%H-%M-%S')}.xlsx"
+    file_path = os.path.join(EXCEL_DATA_PATH, filename)
+    wb.save(file_path)
+    log_event(f"Data saved to {file_path}")
+
+    # Convert the Excel file to Base64.
+    with open(file_path, "rb") as file:
+        base64_encoded = base64.b64encode(file.read()).decode("utf-8")
+    print("====================== OUT =======================================================")
+    products_fetched = len(products)
+    # Update the product count.
+    update_product_count(products_fetched)    
+    return base64_encoded, filename, file_path
