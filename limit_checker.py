@@ -43,22 +43,22 @@ def check_daily_limit():
                 WHERE setting_name = 'daily_product_limit'
             """)
             result = cursor.fetchone()
-
+            
             # If nothing is returned, handle the error
             if not result:
                 log_event("No setting found for daily_product_limit")
                 return False
-
+            
             # Convert result to dictionary manually
             columns = [column[0] for column in cursor.description]
             result = dict(zip(columns, result))
-
+            
             # Handle datetime type for last_reset
             if isinstance(result['last_reset'], datetime):
                 last_reset_date = result['last_reset'].date()
             else:
                 last_reset_date = result['last_reset']
-
+            
             # Reset the count if the date has changed
             if last_reset_date != date.today():
                 cursor.execute("""
@@ -70,7 +70,7 @@ def check_daily_limit():
                 result['products_fetched_today'] = 0
                 result['is_disabled'] = False
                 print("Daily limit reset for the new day.")
-
+            
             # Check if the limit has been reached
             if result['products_fetched_today'] >= result['daily_limit']:
                 cursor.execute("""
