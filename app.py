@@ -18,14 +18,11 @@ from scrapers.tiffany import handle_tiffany
 from scrapers.kayoutlet import handle_kayoutlet
 from scrapers.zales import handle_zales
 from scrapers.anguscoote import handle_anguscoote
-from scrapers.bash import handle_bash
 from scrapers.hardybrothers import handle_hardybrothers
 from scrapers.bevilles import handle_bevilles
 from scrapers.apart import handle_apart
 from scrapers.peoplesjewellers import handle_peoplesjewellers
 from scrapers.tiffany import handle_tiffany
-
-
 from scrapers.armansfinejewellery import handle_armansfinejewellery
 from scrapers.jacquefinejewellery import handle_jacquefinejewellery
 from scrapers.medleyjewellery import handle_medleyjewellery
@@ -52,9 +49,6 @@ from scrapers.mariemass import handle_mariemass
 from scrapers.mattioli import handle_mattioli
 from scrapers.pomellato import handle_pomellato
 from scrapers.dior import handle_dior
-
-
-
 
 # Utility modules
 from utils import get_public_ip, log_event
@@ -142,7 +136,6 @@ def fetch_data():
         "www.zales.com": handle_zales,
         "www.peoplesjewellers.com": handle_peoplesjewellers,
         "www.anguscoote.com.au": handle_anguscoote,
-        "bash.com": handle_bash,
         "www.hardybrothers.com.au": handle_hardybrothers,
         "www.bevilles.com.au": handle_bevilles,
         "armansfinejewellery.com": handle_armansfinejewellery,
@@ -171,6 +164,7 @@ def fetch_data():
         "mattioli.it": handle_mattioli,
         "www.pomellato.com": handle_pomellato,
         "www.dior.com": handle_dior,
+        "www.apart.eu": handle_apart,
         
     }
 
