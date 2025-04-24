@@ -25,7 +25,7 @@ def insert_scrape_log(id, scrape_id, name, url, max_pages, region, type_User, st
         cursor = conn.cursor()
 
         cursor.execute("""
-            INSERT INTO scraping_logs (
+            INSERT INTO IBM_Algo_Webstudy_scraping_logs (
                 id, scrape_id, name, url, max_pages, region, type, ip_address, request_time, status
             ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
         """, (id, scrape_id, name, url, max_pages, region, type_User, ip_address, timestamp, status))
@@ -41,6 +41,6 @@ def update_scrape_status(scrape_id, status):
     conn = pymssql.connect(**DB_CONFIG)
     cursor = conn.cursor()
     cursor.execute(
-        "UPDATE scraping_logs SET status = %s WHERE scrape_id = %s", (status, scrape_id))
+        "UPDATE IBM_Algo_Webstudy_scraping_logs SET status = %s WHERE scrape_id = %s", (status, scrape_id))
     conn.commit()
     conn.close()

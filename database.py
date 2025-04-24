@@ -111,10 +111,10 @@ def create_table_logs():
         cursor.execute("""
             IF NOT EXISTS (
                 SELECT * FROM INFORMATION_SCHEMA.TABLES 
-                WHERE TABLE_NAME = 'scraping_logs'
+                WHERE TABLE_NAME = 'IBM_Algo_Webstudy_scraping_logs'
             )
             BEGIN
-                CREATE TABLE scraping_logs (
+                CREATE TABLE IBM_Algo_Webstudy_scraping_logs (
                     id VARCHAR(255),
                     scrape_id VARCHAR(100),
                     name VARCHAR(255),
@@ -155,5 +155,25 @@ def get_all_scraped_products():
                 if not products:
                     return {"success": False, "message": "No products found."}
                 return {"success": True, "data": products}
+    except pymssql.Error as e:
+        return {"success": False, "error": f"Database error: {str(e)}"}
+    
+    
+def get_all_scraped_logs():
+    """Fetches all scraping logs from the database."""
+    try:
+        with pymssql.connect(**DB_CONFIG) as conn:
+            with conn.cursor(as_dict=True) as cursor:
+                cursor.execute("""
+                    SELECT *
+                    FROM dbo.[IBM_Algo_Webstudy_scraping_logs]
+                """)
+                logs = cursor.fetchall()
+                print(logs)
+
+                if not logs:
+                    return {"success": False, "message": "No logs found."}
+
+                return {"success": True, "data": logs}
     except pymssql.Error as e:
         return {"success": False, "error": f"Database error: {str(e)}"}
