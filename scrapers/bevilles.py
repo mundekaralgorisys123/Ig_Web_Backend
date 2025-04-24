@@ -20,9 +20,8 @@ from io import BytesIO
 load_dotenv()
 PROXY_URL = os.getenv("PROXY_URL")
 
-app = Flask(__name__)
 BASE_DIR = os.path.abspath(os.path.join(os.path.dirname(__file__), '..'))
-EXCEL_DATA_PATH = os.path.join(app.root_path, 'static', 'ExcelData')
+EXCEL_DATA_PATH = os.path.join(BASE_DIR, 'static', 'ExcelData')
 IMAGE_SAVE_PATH = os.path.join(BASE_DIR, 'static', 'Images')
 
 
@@ -38,7 +37,6 @@ def modify_image_url(image_url):
 
     modified_url = re.sub(r'_(\d{2,4})(?=x?\.\w+$)', '_1200', image_url)
     return modified_url + query_params
-
 
 async def download_image_async(image_url, product_name, timestamp, image_folder, unique_id, retries=3):
     """Download image with retries and return its local path."""
@@ -58,18 +56,14 @@ async def download_image_async(image_url, product_name, timestamp, image_folder,
                     f.write(response.content)
                 return image_full_path
             except httpx.RequestError as e:
-                logging.warning(
-                    f"Retry {attempt + 1}/{retries} - Error downloading {product_name}: {e}")
+                logging.warning(f"Retry {attempt + 1}/{retries} - Error downloading {product_name}: {e}")
 
-    logging.error(
-        f"Failed to download {product_name} after {retries} attempts.")
+    logging.error(f"Failed to download {product_name} after {retries} attempts.")
     return "N/A"
-
 
 async def random_delay(min_sec=1, max_sec=3):
     """Introduce a random delay to mimic human-like behavior."""
     await asyncio.sleep(random.uniform(min_sec, max_sec))
-
 
 async def scroll_and_wait(page, max_attempts=10, wait_time=1):
     """Scroll down and wait for new content to load dynamically."""
@@ -77,25 +71,24 @@ async def scroll_and_wait(page, max_attempts=10, wait_time=1):
 
     for attempt in range(max_attempts):
         logging.info(f"Scroll attempt {attempt + 1}/{max_attempts}")
-
+        
         await page.evaluate("window.scrollTo(0, document.body.scrollHeight);")
 
         try:
             await page.wait_for_selector(".product-item", state="attached", timeout=3000)
         except:
             logging.info("No new content detected.")
-
+        
         new_height = await page.evaluate("document.body.scrollHeight")
         if new_height == last_height:
             logging.info("No more new content. Stopping scroll.")
             break
-
+        
         last_height = new_height
         await asyncio.sleep(wait_time)
 
     logging.info("Finished scrolling.")
     return True
-
 
 async def safe_goto_and_wait(page, url, retries=3):
     for attempt in range(retries):
@@ -109,15 +102,12 @@ async def safe_goto_and_wait(page, url, retries=3):
         except Exception as e:
             print(f"[Retry {attempt + 1}] Error: {e}")
             await asyncio.sleep(2)
-    raise Exception(
-        f"[Error] Failed to load product cards on {url} after {retries} attempts.")
-
+    raise Exception(f"[Error] Failed to load product cards on {url} after {retries} attempts.")
 
 async def handle_bevilles(url, max_pages):
     """Async version of Bevilles scraper"""
     ip_address = get_public_ip()
-    logging.info(
-        f"Scraping started for: {url} | IP: {ip_address} | Max pages: {max_pages}")
+    logging.info(f"Scraping started for: {url} | IP: {ip_address} | Max pages: {max_pages}")
 
     # Prepare folders
     os.makedirs(EXCEL_DATA_PATH, exist_ok=True)
@@ -129,8 +119,7 @@ async def handle_bevilles(url, max_pages):
     wb = Workbook()
     sheet = wb.active
     sheet.title = "Products"
-    headers = ["Current Date", "Header", "Product Name", "Image",
-               "Kt", "Price", "Total Dia wt", "Time", "ImagePath"]
+    headers = ["Current Date", "Header", "Product Name", "Image", "Kt", "Price", "Total Dia wt", "Time", "ImagePath"]
     sheet.append(headers)
 
     current_date = datetime.now().strftime("%Y-%m-%d")
@@ -148,8 +137,8 @@ async def handle_bevilles(url, max_pages):
         # Create a new browser instance for each page
         browser = None
         page = None
-
-        if page_count > 1:
+        
+        if page_count>1 :
             current_url = url + "?page=" + str(page_count)
 
         logging.info(f"Navigating to {current_url}")
@@ -167,8 +156,7 @@ async def handle_bevilles(url, max_pages):
 
                 page_title = await page.title()
                 products = await page.query_selector_all(".ss__result")
-                logging.info(
-                    f"Total products scraped on page {page_count}: {len(products)}")
+                logging.info(f"Total products scraped on page {page_count}: {len(products)}")
                 products = products[prev_prod_count:]
                 records = []
                 image_tasks = []
@@ -185,22 +173,19 @@ async def handle_bevilles(url, max_pages):
                         image_tag = await product.query_selector("img.boost-pfs-filter-product-item-main-image")
                         if image_tag:
                             data_srcset = await image_tag.get_attribute("data-srcset") or ""
-                            product_urls = [url.split(" ")[0] for url in data_srcset.split(
-                                ",") if url.startswith("https://")]
+                            product_urls = [url.split(" ")[0] for url in data_srcset.split(",") if url.startswith("https://")]
                             image_url = product_urls[0] if product_urls else "N/A"
                         else:
                             image_url = "N/A"
 
                         # Extract Kt
                         gold_type_pattern = r"\b\d{1,2}K\s+\w+(?:\s+\w+)?\b"
-                        gold_type_match = re.search(
-                            gold_type_pattern, product_name, re.IGNORECASE)
+                        gold_type_match = re.search(gold_type_pattern, product_name, re.IGNORECASE)
                         kt = gold_type_match.group() if gold_type_match else "Not found"
 
                         # Extract diamond weight
                         diamond_weight_pattern = r"(\d+(?:[./-]\d+)?(?:\s*/\s*\d+)?\s*ct(?:\s*tw)?)"
-                        diamond_weight_match = re.search(
-                            diamond_weight_pattern, product_name, re.IGNORECASE)
+                        diamond_weight_match = re.search(diamond_weight_pattern, product_name, re.IGNORECASE)
                         diamond_weight = diamond_weight_match.group() if diamond_weight_match else "N/A"
 
                         # Schedule image download
@@ -209,9 +194,8 @@ async def handle_bevilles(url, max_pages):
                             row_num,
                             unique_id,
                             asyncio.create_task(
-                                download_image_async(
-                                    image_url, product_name, timestamp, image_folder, unique_id)
-                            )))
+                                download_image_async(image_url, product_name, timestamp, image_folder, unique_id)
+                        )))
 
                         records.append((
                             unique_id,
@@ -237,8 +221,7 @@ async def handle_bevilles(url, max_pages):
                         ])
 
                     except Exception as e:
-                        logging.error(
-                            f"Error processing product {row_num}: {e}")
+                        logging.error(f"Error processing product {row_num}: {e}")
                         continue
 
                 # Process downloaded images
@@ -251,10 +234,9 @@ async def handle_bevilles(url, max_pages):
                                 img.width, img.height = 100, 100
                                 sheet.add_image(img, f"D{row_num}")
                             except Exception as img_error:
-                                logging.error(
-                                    f"Error adding image to Excel: {img_error}")
+                                logging.error(f"Error adding image to Excel: {img_error}")
                                 image_path = "N/A"
-
+                        
                         # Update record with actual image_path
                         for i, record in enumerate(records):
                             if record[0] == unique_id:
@@ -271,15 +253,14 @@ async def handle_bevilles(url, max_pages):
                                 break
 
                     except asyncio.TimeoutError:
-                        logging.warning(
-                            f"Timeout downloading image for row {row_num}")
+                        logging.warning(f"Timeout downloading image for row {row_num}")
 
                 all_records.extend(records)
 
                 # Save progress after each page
                 wb.save(file_path)
                 logging.info(f"Progress saved after page {page_count}")
-                page_count += 1
+                page_count+=1
                 prev_prod_count += len(products)
         except Exception as e:
             logging.error(f"Error processing page {page_count}: {str(e)}")
@@ -291,7 +272,7 @@ async def handle_bevilles(url, max_pages):
                 await page.close()
             if browser:
                 await browser.close()
-
+            
             # Add delay between pages
             await asyncio.sleep(random.uniform(2, 5))
 

@@ -22,15 +22,14 @@ import httpx
 load_dotenv()
 PROXY_URL = os.getenv("PROXY_URL")
 
-app = Flask(__name__)
 BASE_DIR = os.path.abspath(os.path.join(os.path.dirname(__file__), '..'))
-EXCEL_DATA_PATH = os.path.join(app.root_path, 'static', 'ExcelData')
+EXCEL_DATA_PATH = os.path.join(BASE_DIR, 'static', 'ExcelData')
 IMAGE_SAVE_PATH = os.path.join(BASE_DIR, 'static', 'Images')
+
 
 # Ensure directories exist
 os.makedirs(EXCEL_DATA_PATH, exist_ok=True)
 os.makedirs(IMAGE_SAVE_PATH, exist_ok=True)
-
 
 def modify_image_url(image_url):
     """Modify the image URL to replace '_260' with '_1200' while keeping query parameters."""
@@ -44,7 +43,6 @@ def modify_image_url(image_url):
 
     modified_url = re.sub(r'(_260)(?=\.\w+$)', '_1200', image_url)
     return modified_url + query_params
-
 
 async def download_image_async(image_url, product_name, timestamp, image_folder, unique_id, retries=3):
     """Download image with retries and return its local path."""
@@ -64,13 +62,10 @@ async def download_image_async(image_url, product_name, timestamp, image_folder,
                     f.write(response.content)
                 return image_full_path
             except httpx.RequestError as e:
-                logging.warning(
-                    f"Retry {attempt + 1}/{retries} - Error downloading {product_name}: {e}")
+                logging.warning(f"Retry {attempt + 1}/{retries} - Error downloading {product_name}: {e}")
 
-    logging.error(
-        f"Failed to download {product_name} after {retries} attempts.")
+    logging.error(f"Failed to download {product_name} after {retries} attempts.")
     return "N/A"
-
 
 async def safe_goto_and_wait(page, url, retries=3):
     for attempt in range(retries):
@@ -87,9 +82,7 @@ async def safe_goto_and_wait(page, url, retries=3):
         except Exception as e:
             print(f"[Retry {attempt + 1}] Error loading {url}: {e}")
             await asyncio.sleep(3)
-    raise Exception(
-        f"[Error] Failed to load product cards on {url} after {retries} attempts.")
-
+    raise Exception(f"[Error] Failed to load product cards on {url} after {retries} attempts.")
 
 async def scroll_page(page):
     """Scroll down to load lazy-loaded products."""
@@ -108,11 +101,9 @@ async def scroll_page(page):
             break  # Stop if no new products were loaded
         prev_product_count = current_product_count
 
-
 async def handle_bash(start_url, max_pages):
     ip_address = get_public_ip()
-    logging.info(
-        f"Scraping started for: {start_url} from IP: {ip_address}, max_pages: {max_pages}")
+    logging.info(f"Scraping started for: {start_url} from IP: {ip_address}, max_pages: {max_pages}")
 
     timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
     image_folder = os.path.join(IMAGE_SAVE_PATH, timestamp)
@@ -122,8 +113,7 @@ async def handle_bash(start_url, max_pages):
     wb = Workbook()
     sheet = wb.active
     sheet.title = "Products"
-    headers = ["Current Date", "Header", "Product Name", "Image",
-               "Gold Type", "Price", "Total Dia Wt", "Time", "ImagePath"]
+    headers = ["Current Date", "Header", "Product Name", "Image", "Gold Type", "Price", "Total Dia Wt", "Time", "ImagePath"]
     sheet.append(headers)
     current_date = datetime.now().strftime("%Y-%m-%d")
     time_only = datetime.now().strftime("%H-%M-%S")
@@ -137,7 +127,7 @@ async def handle_bash(start_url, max_pages):
 
     while current_url and (page_count < max_pages):
         logging.info(f"Processing page {page_count + 1}: {current_url}")
-
+        
         # Create a new browser instance for each page
         browser = None
         page = None
@@ -172,13 +162,10 @@ async def handle_bash(start_url, max_pages):
                         image_tag = await product.query_selector("img[data-testid='image']")
                         image_url = await image_tag.get_attribute("src") if image_tag else "N/A"
 
-                        gold_type_match = re.search(
-                            r"(\d{1,2}K|Platinum|Silver|Gold|White Gold|Yellow Gold|Rose Gold)", product_name, re.IGNORECASE)
-                        kt = gold_type_match.group(
-                            0) if gold_type_match else "N/A"
+                        gold_type_match = re.search(r"(\d{1,2}K|Platinum|Silver|Gold|White Gold|Yellow Gold|Rose Gold)", product_name, re.IGNORECASE)
+                        kt = gold_type_match.group(0) if gold_type_match else "N/A"
 
-                        diamond_weight_match = re.search(
-                            r"(\d+(\.\d+)?)\s*(ct|carat)", product_name, re.IGNORECASE)
+                        diamond_weight_match = re.search(r"(\d+(\.\d+)?)\s*(ct|carat)", product_name, re.IGNORECASE)
                         diamond_weight = f"{diamond_weight_match.group(1)} ct" if diamond_weight_match else "N/A"
 
                         unique_id = str(uuid.uuid4())
@@ -186,8 +173,7 @@ async def handle_bash(start_url, max_pages):
                             row_num,
                             unique_id,
                             asyncio.create_task(
-                                download_image_async(
-                                    image_url, product_name, timestamp, image_folder, unique_id)
+                                download_image_async(image_url, product_name, timestamp, image_folder, unique_id)
                             )
                         ))
 
@@ -215,8 +201,7 @@ async def handle_bash(start_url, max_pages):
                         ])
 
                     except Exception as e:
-                        logging.error(
-                            f"Error processing product {row_num}: {e}")
+                        logging.error(f"Error processing product {row_num}: {e}")
                         continue
 
                 # Process downloaded images
@@ -229,10 +214,9 @@ async def handle_bash(start_url, max_pages):
                                 img.width, img.height = 100, 100
                                 sheet.add_image(img, f"D{row_num}")
                             except Exception as img_error:
-                                logging.error(
-                                    f"Error adding image to Excel: {img_error}")
+                                logging.error(f"Error adding image to Excel: {img_error}")
                                 image_path = "N/A"
-
+                        
                         # Update record with actual image_path
                         for i, record in enumerate(records):
                             if record[0] == unique_id:
@@ -249,8 +233,7 @@ async def handle_bash(start_url, max_pages):
                                 break
 
                     except asyncio.TimeoutError:
-                        logging.warning(
-                            f"Timeout downloading image for row {row_num}")
+                        logging.warning(f"Timeout downloading image for row {row_num}")
 
                 all_records.extend(records)
 
@@ -274,7 +257,7 @@ async def handle_bash(start_url, max_pages):
                 await page.close()
             if browser:
                 await browser.close()
-
+            
             # Add delay between pages
             await asyncio.sleep(random.uniform(2, 5))
 

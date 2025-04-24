@@ -23,15 +23,10 @@ from limit_checker import update_product_count
 load_dotenv()
 PROXY_URL = os.getenv("PROXY_URL")
 
-# Flask and paths
-app = Flask(__name__)
 BASE_DIR = os.path.abspath(os.path.join(os.path.dirname(__file__), '..'))
-EXCEL_DATA_PATH = os.path.join(app.root_path, 'static', 'ExcelData')
+EXCEL_DATA_PATH = os.path.join(BASE_DIR, 'static', 'ExcelData')
 IMAGE_SAVE_PATH = os.path.join(BASE_DIR, 'static', 'Images')
-
 # Resize image if needed
-
-
 def resize_image(image_data, max_size=(100, 100)):
     try:
         img = PILImage.open(BytesIO(image_data))
@@ -44,8 +39,6 @@ def resize_image(image_data, max_size=(100, 100)):
         return image_data
 
 # Transform URL to get high-res image
-
-
 def modify_image_url(image_url):
     if not image_url or image_url == "N/A":
         return image_url
@@ -57,8 +50,6 @@ def modify_image_url(image_url):
     return modified_url + query_params
 
 # Async image downloader
-
-
 async def download_image_async(image_url, product_name, timestamp, image_folder, unique_id, retries=3):
     if not image_url or image_url == "N/A":
         return "N/A"
@@ -76,21 +67,15 @@ async def download_image_async(image_url, product_name, timestamp, image_folder,
                     f.write(response.content)
                 return image_full_path
             except httpx.RequestError as e:
-                logging.warning(
-                    f"Retry {attempt + 1}/{retries} - Error downloading {product_name}: {e}")
-    logging.error(
-        f"Failed to download {product_name} after {retries} attempts.")
+                logging.warning(f"Retry {attempt + 1}/{retries} - Error downloading {product_name}: {e}")
+    logging.error(f"Failed to download {product_name} after {retries} attempts.")
     return "N/A"
 
 # Human-like delay
-
-
 def random_delay(min_sec=1, max_sec=3):
     time.sleep(random.uniform(min_sec, max_sec))
 
 # Reliable page.goto wrapper
-
-
 async def safe_goto_and_wait(page, url, retries=3):
     for attempt in range(retries):
         try:
@@ -107,12 +92,9 @@ async def safe_goto_and_wait(page, url, retries=3):
                 raise
 
 # Main scraper function
-
-
 async def handle_shane_co(url, max_pages):
     ip_address = get_public_ip()
-    logging.info(
-        f"Scraping started for: {url} from IP: {ip_address}, max_pages: {max_pages}")
+    logging.info(f"Scraping started for: {url} from IP: {ip_address}, max_pages: {max_pages}")
 
     os.makedirs(EXCEL_DATA_PATH, exist_ok=True)
     timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
@@ -122,8 +104,7 @@ async def handle_shane_co(url, max_pages):
     wb = Workbook()
     sheet = wb.active
     sheet.title = "Products"
-    headers = ["Current Date", "Header", "Product Name", "Image",
-               "Kt", "Price", "Total Dia wt", "Time", "ImagePath"]
+    headers = ["Current Date", "Header", "Product Name", "Image", "Kt", "Price", "Total Dia wt", "Time", "ImagePath"]
     sheet.append(headers)
 
     all_records = []
@@ -164,8 +145,7 @@ async def handle_shane_co(url, max_pages):
                 product_wrapper = await page.query_selector("div.main-product-container")
                 products = await product_wrapper.query_selector_all("div.tile-container") if product_wrapper else []
                 products = products[prev_prod_count:]
-                logging.info(
-                    f"Total products scraped:{page_count} :{len(products)}")
+                logging.info(f"Total products scraped:{page_count} :{len(products)}")
                 records = []
                 image_tasks = []
 
@@ -189,25 +169,20 @@ async def handle_shane_co(url, max_pages):
                         image_url = "N/A"
 
                     gold_type_pattern = r"\b\d{1,2}(?:K|ct)?\s*(?:White|Yellow|Rose)?\s*Gold\b|\bPlatinum\b|\bSilver\b"
-                    gold_type_match = re.search(
-                        gold_type_pattern, product_name, re.IGNORECASE)
+                    gold_type_match = re.search(gold_type_pattern, product_name, re.IGNORECASE)
                     kt = gold_type_match.group() if gold_type_match else "Not found"
 
                     diamond_weight_pattern = r"\b\d+(\.\d+)?\s*(?:ct|tcw)\b"
-                    diamond_weight_match = re.search(
-                        diamond_weight_pattern, product_name, re.IGNORECASE)
+                    diamond_weight_match = re.search(diamond_weight_pattern, product_name, re.IGNORECASE)
                     diamond_weight = diamond_weight_match.group() if diamond_weight_match else "N/A"
 
                     unique_id = str(uuid.uuid4())
                     image_tasks.append((row_num, unique_id, asyncio.create_task(
-                        download_image_async(
-                            image_url, product_name, timestamp, image_folder, unique_id)
+                        download_image_async(image_url, product_name, timestamp, image_folder, unique_id)
                     )))
 
-                    records.append((unique_id, current_date, page_title,
-                                   product_name, None, kt, price, diamond_weight))
-                    sheet.append([current_date, page_title, product_name,
-                                 None, kt, price, diamond_weight, time_only, image_url])
+                    records.append((unique_id, current_date, page_title, product_name, None, kt, price, diamond_weight))
+                    sheet.append([current_date, page_title, product_name, None, kt, price, diamond_weight, time_only, image_url])
 
                 for row_num, unique_id, task in image_tasks:
                     try:
@@ -222,35 +197,31 @@ async def handle_shane_co(url, max_pages):
                                 image_path = "N/A"
                         for i, record in enumerate(records):
                             if record[0] == unique_id:
-                                records[i] = (
-                                    record[0], record[1], record[2], record[3], image_path, record[5], record[6], record[7])
+                                records[i] = (record[0], record[1], record[2], record[3], image_path, record[5], record[6], record[7])
                                 break
                     except asyncio.TimeoutError:
-                        logging.warning(
-                            f"Image download timed out for row {row_num}")
+                        logging.warning(f"Image download timed out for row {row_num}")
 
                 all_records.extend(records)
 
                 # Check for next page
-
-                next_button = page.locator(
-                    "a.product-category-carousel__pagination")
+                
+                next_button = page.locator("a.product-category-carousel__pagination")
                 if await next_button.count() > 0:
                     next_link = await next_button.first.get_attribute("href")
                     if next_link:
                         current_url = next_link
+                            
 
                 prev_prod_count += len(products)
                 wb.save(file_path)
-
+                
         except Exception as e:
             logging.error(f"Error on page {page_count}: {str(e)}")
             wb.save(file_path)
         finally:
-            if page:
-                await page.close()
-            if browser:
-                await browser.close()
+            if page: await page.close()
+            if browser: await browser.close()
             await asyncio.sleep(random.uniform(2, 5))
 
         page_count += 1

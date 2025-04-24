@@ -12,13 +12,11 @@ from openpyxl import Workbook
 from openpyxl.drawing.image import Image
 from flask import Flask
 from PIL import Image as PILImage
-import requests
-import concurrent.futures
 from utils import get_public_ip, log_event, sanitize_filename
 from dotenv import load_dotenv
 from database import insert_into_db
 from limit_checker import update_product_count
-import aiohttp
+from urllib.parse import urlparse, urlunparse, parse_qs, urlencode
 from io import BytesIO
 from openpyxl.drawing.image import Image as XLImage
 import httpx
@@ -30,6 +28,7 @@ PROXY_URL = os.getenv("PROXY_URL")
 BASE_DIR = os.path.abspath(os.path.join(os.path.dirname(__file__), '..'))
 EXCEL_DATA_PATH = os.path.join(BASE_DIR, 'static', 'ExcelData')
 IMAGE_SAVE_PATH = os.path.join(BASE_DIR, 'static', 'Images')
+
 
 async def download_and_resize_image(session, image_url):
     try:
@@ -47,52 +46,89 @@ async def download_and_resize_image(session, image_url):
         return None
 
 def modify_image_url(image_url):
-    """Modify the image URL to replace '_260' with '_1200' while keeping query parameters."""
+    """Convert a low-res image URL to a higher resolution version for vtexassets.com."""
     if not image_url or image_url == "N/A":
         return image_url
 
-    # Extract and preserve query parameters
-    query_params = ""
-    if "?" in image_url:
-        image_url, query_params = image_url.split("?", 1)
-        query_params = f"?{query_params}"
+    # Parse the URL into components
+    parsed = urlparse(image_url)
+    path = parsed.path
 
-    # Replace '_260' with '_1200' while keeping the rest of the URL intact
-    modified_url = re.sub(r'(_260)(?=\.\w+$)', '_1200', image_url)
+    # Replace any image size pattern with the desired high resolution
+    modified_path = re.sub(r'(\d{3,4})-(\d{3,4})', '800-1067', path)  # Replaces the size part with 800-1067
 
-    return modified_url + query_params  # Append query parameters if they exist
+    # Replace low-res image size identifier (size-product_list2x-v-1) with high-res variant (size-frontend-large-v-1)
+    modified_path = re.sub(r'size-product_list2x-v-1', 'size-frontend-large-v-1', modified_path)
 
+    # Log the modified URL for debugging purposes
+    logging.debug(f"Modified URL: {modified_path}")
+
+    # Reassemble the full URL with query params preserved
+    modified_url = urlunparse(parsed._replace(path=modified_path))
+    return modified_url
+
+def get_alternative_image_url(original_url):
+    if original_url.endswith(".jpg"):
+        return original_url.replace(".jpg", ".webp")
+    return original_url
+import traceback
 async def download_image_async(image_url, product_name, timestamp, image_folder, unique_id, retries=3):
     if not image_url or image_url == "N/A":
         return "N/A"
 
     image_filename = f"{unique_id}_{timestamp}.jpg"
     image_full_path = os.path.join(image_folder, image_filename)
-    modified_url = modify_image_url(image_url)
+    # modified_url = modify_image_url(image_url)
 
-    async with httpx.AsyncClient(timeout=10.0) as client:
+    logging.info(f"Attempting to download image from URL: {image_url}")
+
+    headers = {
+        "User-Agent": "Mozilla/5.0",
+        "Accept": "image/webp,image/*,*/*;q=0.8",
+    }
+    
+    async with httpx.AsyncClient(headers=headers) as client:
         for attempt in range(retries):
             try:
-                response = await client.get(modified_url)
+                response = await client.get(image_url)
                 response.raise_for_status()
                 with open(image_full_path, "wb") as f:
                     f.write(response.content)
                 return image_full_path
+
+            except httpx.HTTPStatusError as e:
+                if e.response.status_code == 404:
+                    logging.error(f"Image not found (404) for {product_name}: {image_url}")
+                    # Try alternative format (.webp)
+                    alt_url = get_alternative_image_url(image_url)
+                    if alt_url != image_url:
+                        try:
+                            alt_response = await client.get(alt_url)
+                            alt_response.raise_for_status()
+                            with open(image_full_path.replace(".jpg", ".webp"), "wb") as f:
+                                f.write(alt_response.content)
+                            return image_full_path.replace(".jpg", ".webp")
+                        except Exception as alt_err:
+                            logging.warning(f"Alternative image also failed for {product_name}: {alt_url} - {alt_err}")
+                    break  # Break on 404 – no point retrying the same URL
+
+                else:
+                    logging.warning(f"HTTP error {e.response.status_code} for {product_name}: {image_url}")
+                    traceback.print_exc()
+
             except httpx.RequestError as e:
-                logging.warning(f"Retry {attempt + 1}/{retries} - Error downloading {product_name}: {e}")
+                logging.warning(f"Retry {attempt + 1}/{retries} - Network error for {product_name}: {e}")
+                traceback.print_exc()
+
     logging.error(f"Failed to download {product_name} after {retries} attempts.")
     return "N/A"
+
+
 
 def random_delay(min_sec=1, max_sec=3):
     """Introduce a random delay to mimic human-like behavior."""
     time.sleep(random.uniform(min_sec, max_sec))
 
-async def scroll_and_wait(page):
-    """Scroll down to load lazy-loaded products."""
-    previous_height = await page.evaluate("document.body.scrollHeight")
-    await page.evaluate("window.scrollBy(0, document.body.scrollHeight);")
-    new_height = await page.evaluate("document.body.scrollHeight")
-    return new_height > previous_height  # Returns True if more content is loaded
 
 async def safe_goto_and_wait(page, url, retries=3):
     for attempt in range(retries):
@@ -102,7 +138,7 @@ async def safe_goto_and_wait(page, url, retries=3):
 
 
             # Wait for the selector with a longer timeout
-            product_cards = await page.wait_for_selector(".product-scroll-wrapper", state="attached", timeout=30000)
+            product_cards = await page.wait_for_selector('.product-card', state="attached", timeout=30000)
 
             # Optionally validate at least 1 is visible (Playwright already does this)
             if product_cards:
@@ -127,19 +163,8 @@ async def safe_goto_and_wait(page, url, retries=3):
 
             
 
-async def safe_wait_for_selector(page, selector, timeout=15000, retries=3):
-    """Retry waiting for a selector."""
-    for attempt in range(retries):
-        try:
-            return await page.wait_for_selector(selector, state="attached", timeout=timeout)
-        except TimeoutError:
-            logging.warning(f"TimeoutError on attempt {attempt + 1}/{retries} waiting for {selector}")
-            if attempt < retries - 1:
-                random_delay(1, 2)  # Add delay before retrying
-            else:
-                raise
 
-async def handle_h_samuel(url, max_pages):
+async def handle_klenotyaurum(url, max_pages):
     ip_address = get_public_ip()
     logging.info(f"Scraping started for: {url} from IP: {ip_address}, max_pages: {max_pages}")
 
@@ -157,14 +182,21 @@ async def handle_h_samuel(url, max_pages):
     sheet.append(headers)
 
     all_records = []
-    filename = f"handle_h_samuel_{datetime.now().strftime('%Y-%m-%d_%H.%M')}.xlsx"
+    filename = f"handle_klenotyaurum_{datetime.now().strftime('%Y-%m-%d_%H.%M')}.xlsx"
     file_path = os.path.join(EXCEL_DATA_PATH, filename)
 
     page_count = 1
     success_count = 0
 
     while page_count <= max_pages:
-        current_url = f"{url}?loadMore={page_count}"
+        
+        if page_count == 1:
+            current_url = f"{url}"
+        else:
+            # Otherwise, add the pagination query for multiple pages
+            current_url = f"{url}?pageStart=1&paginator-page={page_count}"
+
+
         logging.info(f"Processing page {page_count}: {current_url}")
         
         # Create a new browser instance for each page
@@ -182,20 +214,22 @@ async def handle_h_samuel(url, max_pages):
                 await safe_goto_and_wait(page, current_url)
                 log_event(f"Successfully loaded: {current_url}")
 
+               # Scroll to load all products
                 # Scroll to load all products
                 prev_product_count = 0
                 for _ in range(10):
                     await page.evaluate("window.scrollTo(0, document.body.scrollHeight)")
                     await asyncio.sleep(random.uniform(1, 2))  # Random delay between scrolls
-                    current_product_count = await page.locator('.product-item').count()
+                    current_product_count = await page.locator('div.product-card').count()  # Use product-card class instead of data-testid
                     if current_product_count == prev_product_count:
                         break
                     prev_product_count = current_product_count
 
+                # Final product count log
+                products = await page.locator('div.product-card').all()  # Use product-card class to grab all product cards
+                logging.info(f"🧾 Total products found on page {page_count}: {len(products)}")
 
-                product_wrapper = await page.query_selector("div.product-scroll-wrapper")
-                products = await product_wrapper.query_selector_all("div.product-item") if product_wrapper else []
-                logging.info(f"Total products found on page {page_count}: {len(products)}")
+
 
                 page_title = await page.title()
                 current_date = datetime.now().strftime("%Y-%m-%d")
@@ -206,27 +240,40 @@ async def handle_h_samuel(url, max_pages):
 
                 for row_num, product in enumerate(products, start=len(sheet["A"]) + 1):
                     try:
-                        product_name = await (await product.query_selector("h2.name.product-tile-description")).inner_text()
+                        # Locate the product name (ignoring nested <font> tags)
+                        product_name = await product.locator("h2.product-name > span").inner_text()
                     except:
                         product_name = "N/A"
 
+
                     try:
-                        price = await (await product.query_selector("div.price")).inner_text()
+                        # Locate the price (including nested <font> tags)
+                        price = await product.locator("span.info-price-num").inner_text()
                     except:
                         price = "N/A"
 
                     try:
-                        image_url = await (await product.query_selector("img[itemprop='image']")).get_attribute("src")
+                        # Locate the second image URL inside the second <picture> element and prioritize the highest resolution image
+                        image_url = await product.locator("picture:nth-of-type(1) img").get_attribute("src")
+                        if not image_url:
+                            # If the main image is not found, fall back to the source URL
+                            image_url = await product.locator("picture:nth-of-type(1) source").get_attribute("srcset")
                     except:
                         image_url = "N/A"
 
-                    gold_type_pattern = r"(?:\b\d+(?:K|ct)\s+)?(\b(?:White|Yellow|Rose|Platinum|Silver|Gold)\s+\w+\b)"
-                    gold_type_match = re.search(gold_type_pattern, product_name)
-                    kt = gold_type_match.group(1) if gold_type_match else "Not found"
 
-                    diamond_weight_pattern = r"(\d+(\.\d+)?)(?:\s*ct|\s*ct\s*tw)"
-                    diamond_weight_match = re.search(diamond_weight_pattern, product_name)
-                    diamond_weight = diamond_weight_match.group() if diamond_weight_match else "N/A"
+
+
+                    print(image_url)
+
+                    kt_full_match = re.findall(r"\d+(?:\.\d+)?ct\s*(?:Yellow|White|Rose)?\s*Gold|Gold Plated|Sterling Silver|Platinum|Stainless Steel|Tungsten", product_name, re.IGNORECASE)
+                    kt = ", ".join([match.strip() for match in kt_full_match]) if kt_full_match else "N/A"
+
+
+                    # Extract Diamond Weight (supports "1.85ct", "2ct", "1.50ct", etc.)
+                    diamond_weight_match = re.findall(r"\b(\d+(?:\.\d+)?\s*ct)\b", product_name, re.IGNORECASE)
+                    diamond_weight = ", ".join(diamond_weight_match) if diamond_weight_match else "N/A"
+
 
                     unique_id = str(uuid.uuid4())
                     image_tasks.append((row_num, unique_id, asyncio.create_task(

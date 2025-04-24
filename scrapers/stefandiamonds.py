@@ -102,7 +102,7 @@ async def safe_goto_and_wait(page, url, retries=3):
 
 
             # Wait for the selector with a longer timeout
-            product_cards = await page.wait_for_selector(".product-scroll-wrapper", state="attached", timeout=30000)
+            product_cards = await page.wait_for_selector(".product-grid-container", state="attached", timeout=30000)
 
             # Optionally validate at least 1 is visible (Playwright already does this)
             if product_cards:
@@ -127,19 +127,8 @@ async def safe_goto_and_wait(page, url, retries=3):
 
             
 
-async def safe_wait_for_selector(page, selector, timeout=15000, retries=3):
-    """Retry waiting for a selector."""
-    for attempt in range(retries):
-        try:
-            return await page.wait_for_selector(selector, state="attached", timeout=timeout)
-        except TimeoutError:
-            logging.warning(f"TimeoutError on attempt {attempt + 1}/{retries} waiting for {selector}")
-            if attempt < retries - 1:
-                random_delay(1, 2)  # Add delay before retrying
-            else:
-                raise
 
-async def handle_h_samuel(url, max_pages):
+async def handle_stefandiamonds(url, max_pages):
     ip_address = get_public_ip()
     logging.info(f"Scraping started for: {url} from IP: {ip_address}, max_pages: {max_pages}")
 
@@ -157,14 +146,13 @@ async def handle_h_samuel(url, max_pages):
     sheet.append(headers)
 
     all_records = []
-    filename = f"handle_h_samuel_{datetime.now().strftime('%Y-%m-%d_%H.%M')}.xlsx"
+    filename = f"handle_stefandiamonds_{datetime.now().strftime('%Y-%m-%d_%H.%M')}.xlsx"
     file_path = os.path.join(EXCEL_DATA_PATH, filename)
-
     page_count = 1
     success_count = 0
 
     while page_count <= max_pages:
-        current_url = f"{url}?loadMore={page_count}"
+        current_url = f"{url}?page={page_count}"
         logging.info(f"Processing page {page_count}: {current_url}")
         
         # Create a new browser instance for each page
@@ -184,17 +172,17 @@ async def handle_h_samuel(url, max_pages):
 
                 # Scroll to load all products
                 prev_product_count = 0
-                for _ in range(10):
+                for _ in range(10):  # Scroll 10 times or until products stop loading
                     await page.evaluate("window.scrollTo(0, document.body.scrollHeight)")
                     await asyncio.sleep(random.uniform(1, 2))  # Random delay between scrolls
-                    current_product_count = await page.locator('.product-item').count()
+                    current_product_count = await page.locator('.grid__item').count()  # Corrected selector
                     if current_product_count == prev_product_count:
-                        break
+                        break  # No new products, stop scrolling
                     prev_product_count = current_product_count
 
 
-                product_wrapper = await page.query_selector("div.product-scroll-wrapper")
-                products = await product_wrapper.query_selector_all("div.product-item") if product_wrapper else []
+                product_wrapper = await page.query_selector('div.product-grid-container')
+                products = await product_wrapper.query_selector_all('div.grid__item') if product_wrapper else []
                 logging.info(f"Total products found on page {page_count}: {len(products)}")
 
                 page_title = await page.title()
@@ -206,26 +194,42 @@ async def handle_h_samuel(url, max_pages):
 
                 for row_num, product in enumerate(products, start=len(sheet["A"]) + 1):
                     try:
-                        product_name = await (await product.query_selector("h2.name.product-tile-description")).inner_text()
-                    except:
+                        # Product name
+                        product_name_element = await product.query_selector("div.grid-product__meta .grid-product__title")
+                        product_name = await product_name_element.inner_text() if product_name_element else "N/A"
+                    except Exception as e:
+                        print(f"[Product Name] Error: {e}")
                         product_name = "N/A"
 
                     try:
-                        price = await (await product.query_selector("div.price")).inner_text()
-                    except:
+                        # Price
+                        price_element = await product.query_selector("div.grid-product__meta .grid-product__price span")
+                        price = await price_element.inner_text() if price_element else "N/A"
+                    except Exception as e:
+                        print(f"[Price] Error: {e}")
                         price = "N/A"
 
+
                     try:
-                        image_url = await (await product.query_selector("img[itemprop='image']")).get_attribute("src")
-                    except:
+                        # Select the <div> with class 'grid__image-ratio grid__image-ratio--square' and find the <img> tag within it
+                        image_tag = await product.query_selector("div.grid__image-ratio.grid__image-ratio--square img")
+                        
+                        # Retrieve the 'src' attribute if the image tag exists
+                        image_url = await image_tag.get_attribute("src") if image_tag else "N/A"
+                        
+                        # Check if the image URL is relative and prepend the base URL if necessary
+                        if image_url and image_url.startswith('//'):
+                            image_url = 'https:' + image_url
+                    except Exception as e:
+                        print(f"[Image URL] Error: {e}")
                         image_url = "N/A"
 
-                    gold_type_pattern = r"(?:\b\d+(?:K|ct)\s+)?(\b(?:White|Yellow|Rose|Platinum|Silver|Gold)\s+\w+\b)"
-                    gold_type_match = re.search(gold_type_pattern, product_name)
-                    kt = gold_type_match.group(1) if gold_type_match else "Not found"
 
-                    diamond_weight_pattern = r"(\d+(\.\d+)?)(?:\s*ct|\s*ct\s*tw)"
-                    diamond_weight_match = re.search(diamond_weight_pattern, product_name)
+
+                    gold_type_match = re.search(r"\b\d+K\s+\w+\s+\w+\b", product_name)
+                    kt = gold_type_match.group() if gold_type_match else "Not found"
+
+                    diamond_weight_match = re.search(r"\d+[-/]?\d*/?\d*\s*ct\s*tw", product_name)
                     diamond_weight = diamond_weight_match.group() if diamond_weight_match else "N/A"
 
                     unique_id = str(uuid.uuid4())

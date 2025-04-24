@@ -25,15 +25,12 @@ from limit_checker import update_product_count
 load_dotenv()
 PROXY_URL = os.getenv("PROXY_URL")
 
-# Flask and paths
-app = Flask(__name__)
 BASE_DIR = os.path.abspath(os.path.join(os.path.dirname(__file__), '..'))
-EXCEL_DATA_PATH = os.path.join(app.root_path, 'static', 'ExcelData')
+EXCEL_DATA_PATH = os.path.join(BASE_DIR, 'static', 'ExcelData')
 IMAGE_SAVE_PATH = os.path.join(BASE_DIR, 'static', 'Images')
 
+
 # Resize image if needed
-
-
 def resize_image(image_data, max_size=(100, 100)):
     try:
         img = PILImage.open(BytesIO(image_data))
@@ -46,8 +43,6 @@ def resize_image(image_data, max_size=(100, 100)):
         return image_data
 
 # Transform URL to get high-res image
-
-
 def modify_image_url(image_url):
     """Upgrade image resolution by replacing _400x (or similar) with _800x."""
     if not image_url or image_url == "N/A":
@@ -86,8 +81,7 @@ async def download_image_async(image_url, product_name, timestamp, image_folder,
             except httpx.HTTPStatusError as e:
                 # If high-res doesn't exist, fallback to original
                 if e.response.status_code == 404 and modified_url != image_url:
-                    logging.warning(
-                        f"High-res not found for {product_name}, trying original URL.")
+                    logging.warning(f"High-res not found for {product_name}, trying original URL.")
                     try:
                         response = await client.get(image_url)
                         response.raise_for_status()
@@ -95,29 +89,21 @@ async def download_image_async(image_url, product_name, timestamp, image_folder,
                             f.write(response.content)
                         return image_full_path
                     except Exception as fallback_err:
-                        logging.error(
-                            f"Fallback failed for {product_name}: {fallback_err}")
+                        logging.error(f"Fallback failed for {product_name}: {fallback_err}")
                         break
                 else:
-                    logging.warning(
-                        f"HTTP error on attempt {attempt+1} for {product_name}: {e}")
+                    logging.warning(f"HTTP error on attempt {attempt+1} for {product_name}: {e}")
             except httpx.RequestError as e:
-                logging.warning(
-                    f"Request error on attempt {attempt+1} for {product_name}: {e}")
-
-    logging.error(
-        f"Failed to download image for {product_name} after {retries} attempts.")
+                logging.warning(f"Request error on attempt {attempt+1} for {product_name}: {e}")
+    
+    logging.error(f"Failed to download image for {product_name} after {retries} attempts.")
     return "N/A"
 
 # Human-like delay
-
-
 def random_delay(min_sec=1, max_sec=3):
     time.sleep(random.uniform(min_sec, max_sec))
 
 # Reliable page.goto wrapper
-
-
 async def safe_goto_and_wait(page, url, retries=3):
     for attempt in range(retries):
         try:
@@ -134,12 +120,9 @@ async def safe_goto_and_wait(page, url, retries=3):
                 raise
 
 # Main scraper function
-
-
 async def handle_hardybrothers(url, max_pages):
     ip_address = get_public_ip()
-    logging.info(
-        f"Scraping started for: {url} from IP: {ip_address}, max_pages: {max_pages}")
+    logging.info(f"Scraping started for: {url} from IP: {ip_address}, max_pages: {max_pages}")
 
     os.makedirs(EXCEL_DATA_PATH, exist_ok=True)
     timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
@@ -149,8 +132,7 @@ async def handle_hardybrothers(url, max_pages):
     wb = Workbook()
     sheet = wb.active
     sheet.title = "Products"
-    headers = ["Current Date", "Header", "Product Name", "Image",
-               "Kt", "Price", "Total Dia wt", "Time", "ImagePath"]
+    headers = ["Current Date", "Header", "Product Name", "Image", "Kt", "Price", "Total Dia wt", "Time", "ImagePath"]
     sheet.append(headers)
 
     all_records = []
@@ -158,7 +140,7 @@ async def handle_hardybrothers(url, max_pages):
     file_path = os.path.join(EXCEL_DATA_PATH, filename)
 
     page_count = 1
-
+    
     success_count = 0
 
     while page_count <= max_pages:
@@ -190,13 +172,13 @@ async def handle_hardybrothers(url, max_pages):
                 current_date = datetime.now().strftime("%Y-%m-%d")
                 time_only = datetime.now().strftime("%H.%M")
 
+               
                 # Query for all product items
                 products = await page.query_selector_all("div.ProductListWrapper div.ProductItem")
 
                 # Log the total number of product items
-                logging.info(
-                    f"Total products scraped:{page_count}: {len(products)}")
-
+                logging.info(f"Total products scraped:{page_count}: {len(products)}")
+                
                 records = []
                 image_tasks = []
 
@@ -213,7 +195,7 @@ async def handle_hardybrothers(url, max_pages):
                     try:
                         price_element = await product.query_selector(".ProductItem__Price")
                         price = (await price_element.text_content()).strip() if price_element else "N/A"
-
+                       
                     except:
                         price = "N/A"
 
@@ -226,13 +208,11 @@ async def handle_hardybrothers(url, max_pages):
 
                         # Check if the URL contains a placeholder for width (e.g., {width}), and replace it with 900 for the highest resolution
                         if "{width}" in highest_res_url:
-                            highest_res_url = highest_res_url.replace(
-                                "{width}", "800")
+                            highest_res_url = highest_res_url.replace("{width}", "800")
 
                         # Ensure full URL format
                         if highest_res_url.startswith("//"):
-                            # If the URL starts with "//", prepend "https:"
-                            image_url = f"https:{highest_res_url}"
+                            image_url = f"https:{highest_res_url}"  # If the URL starts with "//", prepend "https:"
                         else:
                             image_url = highest_res_url  # If it's already a full URL, use it as is
 
@@ -241,24 +221,19 @@ async def handle_hardybrothers(url, max_pages):
                     except:
                         image_url = "N/A"
 
-                    gold_match = re.search(
-                        r"\b\d{1,2}K\s*(?:White|Yellow|Rose)?\s*Gold\b|\bPlatinum\b|\bSilver\b", product_name, re.IGNORECASE)
+                    gold_match = re.search(r"\b\d{1,2}K\s*(?:White|Yellow|Rose)?\s*Gold\b|\bPlatinum\b|\bSilver\b", product_name, re.IGNORECASE)
                     kt = gold_match.group() if gold_match else "Not found"
 
-                    dia_match = re.search(
-                        r"\b(\d+(\.\d+)?)\s*(?:ct|ctw|carat)\b", product_name, re.IGNORECASE)
+                    dia_match = re.search(r"\b(\d+(\.\d+)?)\s*(?:ct|ctw|carat)\b", product_name, re.IGNORECASE)
                     diamond_weight = f"{dia_match.group(1)} ct" if dia_match else "N/A"
 
                     unique_id = str(uuid.uuid4())
                     image_tasks.append((row_num, unique_id, asyncio.create_task(
-                        download_image_async(
-                            image_url, product_name, timestamp, image_folder, unique_id)
+                        download_image_async(image_url, product_name, timestamp, image_folder, unique_id)
                     )))
 
-                    records.append((unique_id, current_date, page_title,
-                                   product_name, None, kt, price, diamond_weight))
-                    sheet.append([current_date, page_title, product_name,
-                                 None, kt, price, diamond_weight, time_only, image_url])
+                    records.append((unique_id, current_date, page_title, product_name, None, kt, price, diamond_weight))
+                    sheet.append([current_date, page_title, product_name, None, kt, price, diamond_weight, time_only, image_url])
 
                 for row_num, unique_id, task in image_tasks:
                     try:
@@ -273,13 +248,11 @@ async def handle_hardybrothers(url, max_pages):
                                 image_path = "N/A"
                         for i, record in enumerate(records):
                             if record[0] == unique_id:
-                                records[i] = (
-                                    record[0], record[1], record[2], record[3], image_path, record[5], record[6], record[7])
+                                records[i] = (record[0], record[1], record[2], record[3], image_path, record[5], record[6], record[7])
                                 break
                     except asyncio.TimeoutError:
-                        logging.warning(
-                            f"Image download timed out for row {row_num}")
-
+                        logging.warning(f"Image download timed out for row {row_num}")
+                        
                 all_records.extend(records)
                 success_count += 1
 
@@ -290,10 +263,8 @@ async def handle_hardybrothers(url, max_pages):
             logging.error(f"Error on page {page_count}: {str(e)}")
             wb.save(file_path)
         finally:
-            if page:
-                await page.close()
-            if browser:
-                await browser.close()
+            if page: await page.close()
+            if browser: await browser.close()
             await asyncio.sleep(random.uniform(2, 5))
 
         page_count += 1

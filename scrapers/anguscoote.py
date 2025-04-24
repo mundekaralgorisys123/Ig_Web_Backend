@@ -46,7 +46,6 @@ def modify_image_url(image_url):
 
     return modified_url + query_params  # Append query parameters if they exist
 
-
 async def download_image_async(image_url, product_name, timestamp, image_folder, unique_id, retries=3):
     if not image_url or image_url == "N/A":
         return "N/A"
@@ -64,17 +63,13 @@ async def download_image_async(image_url, product_name, timestamp, image_folder,
                     f.write(response.content)
                 return image_full_path
             except httpx.RequestError as e:
-                logging.warning(
-                    f"Retry {attempt + 1}/{retries} - Error downloading {product_name}: {e}")
-    logging.error(
-        f"Failed to download {product_name} after {retries} attempts.")
+                logging.warning(f"Retry {attempt + 1}/{retries} - Error downloading {product_name}: {e}")
+    logging.error(f"Failed to download {product_name} after {retries} attempts.")
     return "N/A"
-
 
 async def random_delay(min_sec=1, max_sec=3):
     """Introduce a random delay to mimic human-like behavior."""
     await asyncio.sleep(random.uniform(min_sec, max_sec))
-
 
 async def scroll_and_wait(page):
     """Scroll down to load lazy-loaded products."""
@@ -84,13 +79,12 @@ async def scroll_and_wait(page):
     new_height = await page.evaluate("document.body.scrollHeight")
     return new_height > previous_height  # Returns True if more content is loaded
 
-
 async def safe_goto_and_wait(page, url, retries=3):
     for attempt in range(retries):
         try:
             print(f"[Attempt {attempt + 1}] Navigating to: {url}")
             await page.goto(url, timeout=180_000, wait_until="domcontentloaded")
-
+            
             # Wait for either product cards or "no products" message
             try:
                 product_cards = await page.wait_for_selector(".ProductCardWrapper, .ps-category-items", timeout=15000)
@@ -101,7 +95,7 @@ async def safe_goto_and_wait(page, url, retries=3):
                 if attempt == retries - 1:
                     print("[Warning] No products found on page")
                     return False
-
+                
             # Check for empty results
             empty_indicator = await page.query_selector("div.message.empty")
             if empty_indicator and "no products" in (await empty_indicator.inner_text()).lower():
@@ -114,11 +108,9 @@ async def safe_goto_and_wait(page, url, retries=3):
 
     raise Exception(f"Failed to load {url} after {retries} attempts")
 
-
 async def handle_anguscoote(url, max_pages):
     ip_address = get_public_ip()
-    logging.info(
-        f"Scraping started for: {url} from IP: {ip_address}, max_pages: {max_pages}")
+    logging.info(f"Scraping started for: {url} from IP: {ip_address}, max_pages: {max_pages}")
 
     # Prepare directories and files
     os.makedirs(EXCEL_DATA_PATH, exist_ok=True)
@@ -130,8 +122,7 @@ async def handle_anguscoote(url, max_pages):
     wb = Workbook()
     sheet = wb.active
     sheet.title = "Products"
-    headers = ["Current Date", "Header", "Product Name", "Image",
-               "Kt", "Price", "Total Dia wt", "Time", "ImagePath"]
+    headers = ["Current Date", "Header", "Product Name", "Image", "Kt", "Price", "Total Dia wt", "Time", "ImagePath"]
     sheet.append(headers)
 
     all_records = []
@@ -142,11 +133,11 @@ async def handle_anguscoote(url, max_pages):
     success_count = 0
 
     while page_count <= max_pages:
-
-        current_url = f"{url}?p={page_count}"
-
+        base_url = url.split('?')[0]
+        current_url = f"{base_url}?p={page_count}" if page_count > 1 else base_url
+        
         logging.info(f"Processing page {page_count}: {current_url}")
-
+        
         # Create a new browser instance for each page
         browser = None
         page = None
@@ -156,7 +147,7 @@ async def handle_anguscoote(url, max_pages):
                 context = await browser.new_context()
                 page = await context.new_page()
                 page.set_default_timeout(120000)  # 2 minute timeout
-
+                
                 if not await safe_goto_and_wait(page, current_url):
                     break
 
@@ -169,8 +160,7 @@ async def handle_anguscoote(url, max_pages):
                 # Process products on current page
                 product_wrapper = await page.query_selector("div.ps-category-items")
                 products = await product_wrapper.query_selector_all("div.ps-category-item") if product_wrapper else []
-                logging.info(
-                    f"Total products found on page {page_count}: {len(products)}")
+                logging.info(f"Total products found on page {page_count}: {len(products)}")
 
                 page_title = await page.title()
                 current_date = datetime.now().strftime("%Y-%m-%d")
@@ -193,21 +183,16 @@ async def handle_anguscoote(url, max_pages):
                             image_url = await img_elem.get_attribute("data-src") or "N/A"
 
                         # Extract gold and diamond info
-                        kt = re.search(r"\b\d+K\s+\w+\s+\w+\b", product_name).group() if re.search(
-                            r"\b\d+K\s+\w+\s+\w+\b", product_name) else "N/A"
-                        diamond = re.search(r"\d+[-/]?\d*/?\d*\s*ct\s*tw", product_name).group(
-                        ) if re.search(r"\d+[-/]?\d*/?\d*\s*ct\s*tw", product_name) else "N/A"
+                        kt = re.search(r"\b\d+K\s+\w+\s+\w+\b", product_name).group() if re.search(r"\b\d+K\s+\w+\s+\w+\b", product_name) else "N/A"
+                        diamond = re.search(r"\d+[-/]?\d*/?\d*\s*ct\s*tw", product_name).group() if re.search(r"\d+[-/]?\d*/?\d*\s*ct\s*tw", product_name) else "N/A"
 
                         unique_id = str(uuid.uuid4())
                         image_tasks.append((row_num, unique_id, asyncio.create_task(
-                            download_image_async(
-                                image_url, product_name, timestamp, image_folder, unique_id)
+                            download_image_async(image_url, product_name, timestamp, image_folder, unique_id)
                         )))
 
-                        records.append(
-                            (unique_id, current_date, page_title, product_name, None, kt, price, diamond))
-                        sheet.append([current_date, page_title, product_name,
-                                     None, kt, price, diamond, time_only, image_url])
+                        records.append((unique_id, current_date, page_title, product_name, None, kt, price, diamond))
+                        sheet.append([current_date, page_title, product_name, None, kt, price, diamond, time_only, image_url])
 
                     except Exception as e:
                         logging.error(f"Error extracting product data: {e}")
@@ -223,18 +208,15 @@ async def handle_anguscoote(url, max_pages):
                                 img.width, img.height = 100, 100
                                 sheet.add_image(img, f"D{row_num}")
                             except Exception as img_error:
-                                logging.error(
-                                    f"Error adding image to Excel: {img_error}")
+                                logging.error(f"Error adding image to Excel: {img_error}")
                                 image_path = "N/A"
-
+                        
                         for i, record in enumerate(records):
                             if record[0] == unique_id:
-                                records[i] = (
-                                    record[0], record[1], record[2], record[3], image_path, record[5], record[6], record[7])
+                                records[i] = (record[0], record[1], record[2], record[3], image_path, record[5], record[6], record[7])
                                 break
                     except asyncio.TimeoutError:
-                        logging.warning(
-                            f"Timeout downloading image for row {row_num}")
+                        logging.warning(f"Timeout downloading image for row {row_num}")
 
                 all_records.extend(records)
                 success_count += 1
@@ -253,10 +235,10 @@ async def handle_anguscoote(url, max_pages):
                 await page.close()
             if browser:
                 await browser.close()
-
+            
             # Add delay between pages
             await asyncio.sleep(random.uniform(2, 5))
-
+            
         page_count += 1
 
     # Final save and database operations

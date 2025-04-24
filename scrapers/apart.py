@@ -24,9 +24,8 @@ from openpyxl.drawing.image import Image
 load_dotenv()
 PROXY_URL = os.getenv("PROXY_URL")
 
-app = Flask(__name__)
 BASE_DIR = os.path.abspath(os.path.join(os.path.dirname(__file__), '..'))
-EXCEL_DATA_PATH = os.path.join(app.root_path, 'static', 'ExcelData')
+EXCEL_DATA_PATH = os.path.join(BASE_DIR, 'static', 'ExcelData')
 IMAGE_SAVE_PATH = os.path.join(BASE_DIR, 'static', 'Images')
 
 
@@ -44,7 +43,6 @@ async def download_and_resize_image(session, image_url):
     except Exception as e:
         logging.warning(f"Error downloading/resizing image: {e}")
         return None
-
 
 def modify_image_url(image_url):
     """Convert Apart low-res image URL ending with '_m.jpg' to high-res '.jpg' while keeping query params."""
@@ -82,8 +80,7 @@ async def download_image_async(image_url, product_name, timestamp, image_folder,
             except httpx.HTTPStatusError as e:
                 # If high-res doesn't exist, fallback to original
                 if e.response.status_code == 404 and modified_url != image_url:
-                    logging.warning(
-                        f"High-res not found for {product_name}, trying original URL.")
+                    logging.warning(f"High-res not found for {product_name}, trying original URL.")
                     try:
                         response = await client.get(image_url)
                         response.raise_for_status()
@@ -91,25 +88,19 @@ async def download_image_async(image_url, product_name, timestamp, image_folder,
                             f.write(response.content)
                         return image_full_path
                     except Exception as fallback_err:
-                        logging.error(
-                            f"Fallback failed for {product_name}: {fallback_err}")
+                        logging.error(f"Fallback failed for {product_name}: {fallback_err}")
                         break
                 else:
-                    logging.warning(
-                        f"HTTP error on attempt {attempt+1} for {product_name}: {e}")
+                    logging.warning(f"HTTP error on attempt {attempt+1} for {product_name}: {e}")
             except httpx.RequestError as e:
-                logging.warning(
-                    f"Request error on attempt {attempt+1} for {product_name}: {e}")
-
-    logging.error(
-        f"Failed to download image for {product_name} after {retries} attempts.")
+                logging.warning(f"Request error on attempt {attempt+1} for {product_name}: {e}")
+    
+    logging.error(f"Failed to download image for {product_name} after {retries} attempts.")
     return "N/A"
-
 
 def random_delay(min_sec=1, max_sec=3):
     """Introduce a random delay to mimic human-like behavior."""
     time.sleep(random.uniform(min_sec, max_sec))
-
 
 async def scroll_and_wait(page):
     """Scroll down to load lazy-loaded products."""
@@ -118,12 +109,12 @@ async def scroll_and_wait(page):
     new_height = await page.evaluate("document.body.scrollHeight")
     return new_height > previous_height  # Returns True if more content is loaded
 
-
 async def safe_goto_and_wait(page, url, retries=3):
     for attempt in range(retries):
         try:
             print(f"[Attempt {attempt + 1}] Navigating to: {url}")
             await page.goto(url, timeout=180_000, wait_until="domcontentloaded")
+
 
             # Wait for the selector with a longer timeout
             product_cards = await page.wait_for_selector(".list-group-horizontal", state="attached", timeout=30000)
@@ -133,26 +124,23 @@ async def safe_goto_and_wait(page, url, retries=3):
                 print("[Success] Product cards loaded.")
                 return
         except Error as e:
-            logging.error(
-                f"Error navigating to {url} on attempt {attempt + 1}: {e}")
+            logging.error(f"Error navigating to {url} on attempt {attempt + 1}: {e}")
             if attempt < retries - 1:
                 logging.info("Retrying after waiting a bit...")
                 random_delay(1, 3)  # Add a delay before retrying
             else:
-                logging.error(
-                    f"Failed to navigate to {url} after {retries} attempts.")
+                logging.error(f"Failed to navigate to {url} after {retries} attempts.")
                 raise
         except TimeoutError as e:
-            logging.warning(
-                f"TimeoutError on attempt {attempt + 1} navigating to {url}: {e}")
+            logging.warning(f"TimeoutError on attempt {attempt + 1} navigating to {url}: {e}")
             if attempt < retries - 1:
                 logging.info("Retrying after waiting a bit...")
                 random_delay(1, 3)  # Add a delay before retrying
             else:
-                logging.error(
-                    f"Failed to navigate to {url} after {retries} attempts.")
+                logging.error(f"Failed to navigate to {url} after {retries} attempts.")
                 raise
 
+            
 
 async def safe_wait_for_selector(page, selector, timeout=15000, retries=3):
     """Retry waiting for a selector."""
@@ -160,18 +148,17 @@ async def safe_wait_for_selector(page, selector, timeout=15000, retries=3):
         try:
             return await page.wait_for_selector(selector, state="attached", timeout=timeout)
         except TimeoutError:
-            logging.warning(
-                f"TimeoutError on attempt {attempt + 1}/{retries} waiting for {selector}")
+            logging.warning(f"TimeoutError on attempt {attempt + 1}/{retries} waiting for {selector}")
             if attempt < retries - 1:
                 random_delay(1, 2)  # Add delay before retrying
             else:
                 raise
 
 
+
 async def handle_apart(url, max_pages):
     ip_address = get_public_ip()
-    logging.info(
-        f"Scraping started for: {url} from IP: {ip_address}, max_pages: {max_pages}")
+    logging.info(f"Scraping started for: {url} from IP: {ip_address}, max_pages: {max_pages}")
 
     # Prepare directories and files
     os.makedirs(EXCEL_DATA_PATH, exist_ok=True)
@@ -183,22 +170,21 @@ async def handle_apart(url, max_pages):
     wb = Workbook()
     sheet = wb.active
     sheet.title = "Products"
-    headers = ["Current Date", "Header", "Product Name", "Image",
-               "Kt", "Price", "Total Dia wt", "Time", "ImagePath"]
+    headers = ["Current Date", "Header", "Product Name", "Image", "Kt", "Price", "Total Dia wt", "Time", "ImagePath"]
     sheet.append(headers)
 
     all_records = []
     filename = f"handle_apart_{datetime.now().strftime('%Y-%m-%d_%H.%M')}.xlsx"
     file_path = os.path.join(EXCEL_DATA_PATH, filename)
 
-    page_count = 1
+    page_count = 2
     success_count = 0
-    current_url = url
-
+    current_url=url
+    
     while page_count <= max_pages:
-        current_url = f"{url}?page={page_count}"
+        current_url = f"{url}?page={page_count - 1}"
         logging.info(f"Processing page {page_count}: {current_url}")
-
+        
         browser = None
         page = None
         try:
@@ -224,17 +210,17 @@ async def handle_apart(url, max_pages):
                 page_title = await page.title()
                 current_date = datetime.now().strftime("%Y-%m-%d")
                 time_only = datetime.now().strftime("%H.%M")
-
+                
                 wrapper = page.locator("#product-list")
                 products = await wrapper.locator("li.item").all() if await wrapper.count() > 0 else []
-
-                logging.info(
-                    f"Total products scraped on page: {len(products)}")
+                
+           
+                logging.info(f"Total products scraped on page: {len(products)}")
                 records = []
                 image_tasks = []
 
                 image_tasks = []
-
+                
                 for row_num, product in enumerate(products, start=len(sheet["A"]) + 1):
                     try:
                         product_name = await (await product.query_selector("div.product-name a.productListGTM")).inner_text()
@@ -242,8 +228,7 @@ async def handle_apart(url, max_pages):
                         product_name = "N/A"
 
                     try:
-                        price_element = product.locator(
-                            "div.price-cnt span.value").first
+                        price_element = product.locator("div.price-cnt span.value").first
                         if await price_element.count() > 0:
                             price = await price_element.text_content()
                             price = price.strip()
@@ -253,8 +238,7 @@ async def handle_apart(url, max_pages):
                         price = "N/A"
 
                     try:
-                        image_element = product.locator(
-                            "img.group.list-group-image").first
+                        image_element = product.locator("img.group.list-group-image").first
                         if await image_element.count() > 0:
                             image_url = await image_element.get_attribute("src")
                             if image_url and image_url.startswith("//"):
@@ -264,26 +248,23 @@ async def handle_apart(url, max_pages):
                     except:
                         image_url = "N/A"
 
-                    gold_type_match = re.search(
-                        r"(\d{1,2}K|Platinum|Silver|Gold|White Gold|Yellow Gold|Rose Gold)", product_name, re.IGNORECASE)
+                    gold_type_match = re.search(r"(\d{1,2}K|Platinum|Silver|Gold|White Gold|Yellow Gold|Rose Gold)", product_name, re.IGNORECASE)
                     kt = gold_type_match.group(0) if gold_type_match else "N/A"
 
-                    diamond_weight_match = re.search(
-                        r"(\d+(\.\d+)?)\s*(ct|carat)", product_name, re.IGNORECASE)
+                    diamond_weight_match = re.search(r"(\d+(\.\d+)?)\s*(ct|carat)", product_name, re.IGNORECASE)
                     diamond_weight = f"{diamond_weight_match.group(1)} ct" if diamond_weight_match else "N/A"
 
                     unique_id = str(uuid.uuid4())
                     image_tasks.append((row_num, unique_id, asyncio.create_task(
-                        download_image_async(
-                            image_url, product_name, timestamp, image_folder, unique_id)
+                        download_image_async(image_url, product_name, timestamp, image_folder, unique_id)
                     )))
+                    
 
                     # all_records.append((unique_id, current_date, page_title, product_name, image_url, kt, price, diamond_weight))
-                    records.append((unique_id, current_date, page_title,
-                                   product_name, None, kt, price, diamond_weight))
-                    sheet.append([current_date, page_title, product_name,
-                                 None, kt, price, diamond_weight, time_only, image_url])
+                    records.append((unique_id, current_date, page_title, product_name, None, kt, price, diamond_weight))
+                    sheet.append([current_date, page_title, product_name, None, kt, price, diamond_weight, time_only, image_url])
 
+                    
                 for row_num, unique_id, task in image_tasks:
                     try:
                         image_path = await asyncio.wait_for(task, timeout=60)
@@ -297,17 +278,15 @@ async def handle_apart(url, max_pages):
                                 image_path = "N/A"
                         for i, record in enumerate(records):
                             if record[0] == unique_id:
-                                records[i] = (
-                                    record[0], record[1], record[2], record[3], image_path, record[5], record[6], record[7])
+                                records[i] = (record[0], record[1], record[2], record[3], image_path, record[5], record[6], record[7])
                                 break
                     except asyncio.TimeoutError:
-                        logging.warning(
-                            f"Image download timed out for row {row_num}")
+                        logging.warning(f"Image download timed out for row {row_num}")
 
                 all_records.extend(records)
                 success_count += 1
 
-                # Save progress after each page
+                 #Save progress after each page
                 wb.save(file_path)
                 logging.info(f"Progress saved after page {page_count}")
 
@@ -321,11 +300,12 @@ async def handle_apart(url, max_pages):
                 await page.close()
             if browser:
                 await browser.close()
-
+            
             # Add delay between pages
             await asyncio.sleep(random.uniform(2, 5))
-
+            
         page_count += 1
+
 
     # Final save and database operations
     wb.save(file_path)

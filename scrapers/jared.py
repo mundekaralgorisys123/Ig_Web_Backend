@@ -27,12 +27,10 @@ from functools import partial
 load_dotenv()
 PROXY_URL = os.getenv("PROXY_URL")
 
-app = Flask(__name__)
-
 BASE_DIR = os.path.abspath(os.path.join(os.path.dirname(__file__), '..'))
-print(BASE_DIR)
 EXCEL_DATA_PATH = os.path.join(BASE_DIR, 'static', 'ExcelData')
 IMAGE_SAVE_PATH = os.path.join(BASE_DIR, 'static', 'Images')
+
 # Ensure the directories exist
 os.makedirs(EXCEL_DATA_PATH, exist_ok=True)
 os.makedirs(IMAGE_SAVE_PATH, exist_ok=True)
